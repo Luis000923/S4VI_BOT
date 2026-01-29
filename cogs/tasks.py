@@ -38,27 +38,25 @@ class Tasks(commands.Cog):
         recordatorios="¿Activar recordatorios automáticos? (Sí por defecto)"
     )
     async def tarea_crear(self, interaction: discord.Interaction, materia: str, titulo: str, fecha_entrega: str, recordatorios: bool = True):
-        # Diferir la respuesta inmediatamente para evitar el timeout de 3 segundos
-        await interaction.response.defer(ephemeral=False)
-
-        # Restricción: solo permitir ejecución en el canal designado de tareas pendientes
+        # 1. Validaciones rápidas (Respuestas efímeras)
         channel_name = interaction.channel.name.lower()
         if "tareas-pendientes" not in channel_name.replace(" ", "-"):
             target_channel = find_channel(interaction.guild, "tareas-pendientes")
-            await interaction.followup.send(
-                f"Use este comando en <#{target_channel.id if target_channel else 'pendientes'}>"
+            await interaction.response.send_message(
+                f"Use este comando en <#{target_channel.id if target_channel else 'pendientes'}>",
+                ephemeral=True
             )
             return
 
         if not await self.check_permissions(interaction):
-            await interaction.followup.send("Permisos insuficientes.")
+            await interaction.response.send_message("Permisos insuficientes.", ephemeral=True)
             return
 
         if materia not in SUBJECTS:
-            await interaction.followup.send("Selección de materia inválida.")
+            await interaction.response.send_message("Selección de materia inválida.", ephemeral=True)
             return
 
-        # Validación y procesamiento del formato de fecha
+        # Procesamiento de fecha
         clean_date = fecha_entrega.lower().strip()
         if clean_date in ["no", "no asignada", "n/a", "sin fecha", "vacío", "vacio", "ninguna", "pendiente"]:
             formatted_date_str = "No asignada"
@@ -66,12 +64,21 @@ class Tasks(commands.Cog):
             try:
                 formatted_date = datetime.datetime.strptime(fecha_entrega, "%d/%m/%Y %H:%M")
                 if formatted_date < datetime.datetime.now():
-                    await interaction.followup.send("La fecha especificada ya ha pasado.")
+                    await interaction.response.send_message("La fecha especificada ya ha pasado.", ephemeral=True)
                     return
                 formatted_date_str = fecha_entrega
             except ValueError:
-                await interaction.followup.send("Use el formato: DD/MM/AAAA HH:MM o 'ninguna' para sin fecha.")
+                await interaction.response.send_message("Use el formato: DD/MM/AAAA HH:MM o 'ninguna' para sin fecha.", ephemeral=True)
                 return
+
+        # 2. Diferir respuesta para el trabajo pesado
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except discord.errors.InteractionResponded:
+            pass # Ya fue respondida por otra instancia o proceso
+        except discord.errors.NotFound:
+            print("Error: La interacción expiró antes de poder diferir.")
+            return
 
         internal_subject = SUBJECTS_MAP.get(materia, materia)
         embed = create_task_embed(titulo, internal_subject, formatted_date_str)
@@ -158,10 +165,8 @@ class Tasks(commands.Cog):
         fecha_entrega="Nueva fecha DD/MM/AAAA HH:MM (opcional)"
     )
     async def tarea_editar(self, interaction: discord.Interaction, tarea: str, titulo: str = None, fecha_entrega: str = None):
-        await interaction.response.defer(ephemeral=True)
-        
         if not await self.check_permissions(interaction):
-            await interaction.followup.send("Permisos insuficientes.", ephemeral=True)
+            await interaction.response.send_message("Permisos insuficientes.", ephemeral=True)
             return
 
         try:
@@ -189,8 +194,14 @@ class Tasks(commands.Cog):
                     datetime.datetime.strptime(fecha_entrega, "%d/%m/%Y %H:%M")
                     new_date = fecha_entrega
                 except ValueError:
-                    await interaction.followup.send("Formato de fecha inválido. use DD/MM/AAAA HH:MM o 'ninguna'.", ephemeral=True)
+                    await interaction.response.send_message("Formato de fecha inválido. use DD/MM/AAAA HH:MM o 'ninguna'.", ephemeral=True)
                     return
+
+        # Diferir después de validaciones
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except:
+            return
 
         # Actualizar registros en la base de datos
         self.bot.db.update_task(task_id, title=titulo, due_date=new_date)
