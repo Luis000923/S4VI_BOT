@@ -1,28 +1,61 @@
+# config.py - Constantes de configuración y funciones de utilidad
 import unicodedata
 import re
 import discord
 
-# Limpia el texto para que el bot encuentre canales facil (sin tildes ni emojis)
+# Normaliza el texto para búsquedas consistentes de canales (elimina acentos y caracteres no alfanuméricos)
 def normalize_text(text):
     if not text: return ""
     text = unicodedata.normalize('NFD', text)
     text = "".join([c for c in text if unicodedata.category(c) != 'Mn'])
     return re.sub(r'[^a-z0-9]', '', text.lower())
 
-# Busca un canal aunque tenga emojis o espacios raros
+# Busca un canal basado en palabras clave o nombres normalizados
 def find_channel(guild, name_query):
-    query = normalize_text(name_query)
-    # Primero busca que sean iguales
+    if not name_query: return None
+    
+    # Verifica si la consulta se refiere a una materia para obtener el canal específico
+    target_name = None
+    if name_query in SUBJECTS:
+        internal_name = SUBJECTS_MAP.get(name_query)
+        target_name = SUBJECT_CHANNEL_MAP.get(internal_name)
+    elif name_query in SUBJECTS_MAP.values():
+        target_name = SUBJECT_CHANNEL_MAP.get(name_query)
+    
+    # Normaliza la entrada para la búsqueda
+    query = normalize_text(target_name) if target_name else normalize_text(name_query)
+    simple_query = normalize_text(name_query)
+
+    # 1. Coincidencia exacta normalizada
     for channel in guild.text_channels:
-        if normalize_text(channel.name) == query:
+        chan_norm = normalize_text(channel.name)
+        if chan_norm == query or chan_norm == simple_query:
             return channel
-    # Luego busca que el nombre contenga la palabra (ej: "mate" en "tareas-mate")
+            
+    # 2. Coincidencia parcial usando el nombre mapeado
     for channel in guild.text_channels:
-        if query in normalize_text(channel.name):
+        chan_norm = normalize_text(channel.name)
+        if query and (query in chan_norm or chan_norm in query):
             return channel
+            
+    # 3. Búsqueda basada en palabras clave para materias específicas
+    base_keywords = {
+        "ciberseguridad": "seguridad",
+        "infraestructuradered": "infraestructura",
+        "programacion": "programacion",
+        "matematica": "matematica",
+        "etica": "etica"
+    }
+    
+    search_key = base_keywords.get(simple_query, simple_query)
+    for channel in guild.text_channels:
+        chan_norm = normalize_text(channel.name)
+        if search_key in chan_norm:
+            return channel
+            
     return None
 
-# Nombres de materias y sus etiquetas en Discord
+# Mapeo de materias y nombres para visualización
 SUBJECTS_MAP = {
     "📐 MATEMÁTICA": "Matemática",
     "🔐 SEGURIDAD-DE-LA-INFORMACIÓN": "Ciberseguridad",
@@ -33,7 +66,7 @@ SUBJECTS_MAP = {
 
 SUBJECTS = list(SUBJECTS_MAP.keys())
 
-# Canales del sistema
+# Nombres de canales del sistema
 CHANNELS = {
     "WELCOME": "general",
     "PENDING": "📄-tareas-pendientes",
@@ -42,7 +75,7 @@ CHANNELS = {
     "SUBJECT_PREFIX": "📄-tareas-" 
 }
 
-# Canales especificos por materia
+# Mapeo de canales específicos por materia
 SUBJECT_CHANNEL_MAP = {
     "Matemática": "📏-tareas-matemática",
     "Ciberseguridad": "🔐-tareas-seguridad",
@@ -51,12 +84,12 @@ SUBJECT_CHANNEL_MAP = {
     "Ética": "⚖️-tareas-ética"
 }
 
-# Saca el nombre del canal de una materia
+# Obtiene el nombre del canal específico para una materia dada
 def get_subject_channel_name(display_name):
     internal_name = SUBJECTS_MAP.get(display_name, display_name)
     return SUBJECT_CHANNEL_MAP.get(internal_name, f"tareas-{internal_name.lower()}")
 
-# Roles que pueden usar el bot
+# Definición de roles y permisos
 ROLES = {
     "ADMIN": "admin",
     "DELEGADO": "delegado",
@@ -70,7 +103,7 @@ ROLES = {
     ]
 }
 
-# Colores para los mensajes
+# Constantes de colores para la interfaz
 COLOR_PENDING = 0x3498db
 COLOR_SUCCESS = 0x2ecc71
 COLOR_REMINDER = 0xe67e22

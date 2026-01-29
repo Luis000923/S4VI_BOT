@@ -1,3 +1,4 @@
+# deliveries.py - Gestión de entregas de tareas
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -9,21 +10,21 @@ class Deliveries(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # Registra que ya hiciste una tarea
-    @app_commands.command(name="completar-tarea", description="Marca una tarea como entregada")
+    # Registrar la entrega de una tarea por parte de un usuario
+    @app_commands.command(name="completar-tarea", description="Marcar una tarea como completada")
     @app_commands.describe(
-        materia="De que materia es?",
-        tarea="Cual tarea entregaste?"
+        materia="Materia de la tarea",
+        tarea="ID o nombre de la tarea específica"
     )
     async def tarea_entregada(self, interaction: discord.Interaction, materia: str, tarea: str):
-        # Revisa que estemos en el canal correcto
+        # Validar restricción de canal
         channel_name = interaction.channel.name
         expected = CHANNELS["DELIVERED"]
         
         if channel_name != expected and channel_name.replace(" ", "-") != expected.replace(" ", "-"):
             target = discord.utils.get(interaction.guild.channels, name=expected)
             await interaction.response.send_message(
-                f"Usa este comando en <#{target.id if target else 'entregadas'}>", 
+                f"Use este comando en <#{target.id if target else 'entregadas'}>", 
                 ephemeral=True
             )
             return
@@ -33,29 +34,29 @@ class Deliveries(commands.Cog):
         tasks = self.bot.db.get_tasks(interaction.guild.id)
         target_task = None
 
-        # Saca el ID que viene del menu
+        # Extraer el ID de la tarea del input
         if tarea.isdigit():
             tid = int(tarea)
             target_task = next((t for t in tasks if t[0] == tid), None)
         
         if not target_task:
-            await interaction.response.send_message(create_error_embed("No encontre esa tarea."), ephemeral=True)
+            await interaction.response.send_message(create_error_embed("Tarea no encontrada."), ephemeral=True)
             return
 
-        # Guarda la entrega
+        # Registrar entrega en la base de datos
         self.bot.db.mark_as_delivered(target_task[0], interaction.user.id, interaction.guild.id)
 
-        # Muestra el mensaje de exito
-        embed = create_success_embed(f"Tarea **{target_task[2]}** entregada.")
-        embed.set_footer(text=f"Por: {interaction.user.display_name}")
+        # Confirmar éxito
+        embed = create_success_embed(f"Tarea **{target_task[2]}** marcada como entregada.")
+        embed.set_footer(text=f"Usuario: {interaction.user.display_name}")
         await interaction.response.send_message(embed=embed)
 
-    # Menu para elegir materia
+    # Autocompletado para materias
     @tarea_entregada.autocomplete('materia')
     async def materia_autocomplete(self, interaction: discord.Interaction, current: str):
         return [app_commands.Choice(name=s, value=s) for s in SUBJECTS if current.lower() in s.lower()][:25]
 
-    # Menu para elegir tarea segun la materia
+    # Autocompletado para tareas basado en la materia seleccionada
     @tarea_entregada.autocomplete('tarea')
     async def tarea_autocomplete(self, interaction: discord.Interaction, current: str):
         materia_sel = interaction.namespace.materia

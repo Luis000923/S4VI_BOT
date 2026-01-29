@@ -1,18 +1,19 @@
+# keep_alive.py - Servidor Flask para mantener el bot activo
 from flask import Flask
 from threading import Thread
 
-# Crea el servidor web sencillo
+# Aplicación Flask para el monitoreo
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot en linea!"
+    return "El bot está en línea."
 
 def run():
-    # El bot corre en el puerto 8080 (comun para estos servicios)
+    # Ejecutar el servidor web en el puerto 8080 o en el host especificado
     app.run(host='0.0.0.0', port=8080)
 
-# Funcion para que el bot no se apague nunca
+# Inicializar un hilo separado para ejecutar el servidor web
 def keep_alive():
     t = Thread(target=run)
     t.start()
