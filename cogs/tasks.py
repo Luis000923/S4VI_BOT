@@ -39,6 +39,10 @@ class Tasks(commands.Cog):
     )
     async def tarea_crear(self, interaction: discord.Interaction, materia: str, titulo: str, fecha_entrega: str, recordatorios: bool = True):
         # 1. Validaciones rápidas (Respuestas efímeras)
+        if len(titulo) > 250:
+            await interaction.response.send_message("El título de la tarea es demasiado largo (máximo 250 caracteres).", ephemeral=True)
+            return
+
         channel_name = interaction.channel.name.lower()
         if "tareas-pendientes" not in channel_name.replace(" ", "-"):
             target_channel = find_channel(interaction.guild, "tareas-pendientes")
@@ -169,7 +173,12 @@ class Tasks(commands.Cog):
             await interaction.response.send_message("Permisos insuficientes.", ephemeral=True)
             return
 
+        if titulo and len(titulo) > 250:
+            await interaction.response.send_message("El título es demasiado largo (máximo 250 caracteres).", ephemeral=True)
+            return
+
         try:
+            # Intentar capturar el ID de formatos como "123: Título" o solo "123"
             task_id = int(tarea.split(":")[0])
         except:
             await interaction.response.send_message("Formato de ID inválido.", ephemeral=True)
