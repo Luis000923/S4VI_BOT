@@ -2,7 +2,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from utils.config import SUBJECTS, CHANNELS, ROLES, find_channel
+from utils.config import SUBJECTS, CHANNELS, ROLES, find_channel, SUBJECTS_MAP
 from utils.embeds import create_task_embed, create_success_embed, create_error_embed
 import datetime
 
@@ -46,17 +46,16 @@ class Tasks(commands.Cog):
         if "tareas-pendientes" not in channel_name.replace(" ", "-"):
             target_channel = find_channel(interaction.guild, "tareas-pendientes")
             await interaction.followup.send(
-                f"Use este comando en <#{target_channel.id if target_channel else 'pendientes'}>", 
-                ephemeral=True
+                f"Use este comando en <#{target_channel.id if target_channel else 'pendientes'}>"
             )
             return
 
         if not await self.check_permissions(interaction):
-            await interaction.followup.send("Permisos insuficientes.", ephemeral=True)
+            await interaction.followup.send("Permisos insuficientes.")
             return
 
         if materia not in SUBJECTS:
-            await interaction.followup.send("Selección de materia inválida.", ephemeral=True)
+            await interaction.followup.send("Selección de materia inválida.")
             return
 
         # Validación y procesamiento del formato de fecha
@@ -67,14 +66,13 @@ class Tasks(commands.Cog):
             try:
                 formatted_date = datetime.datetime.strptime(fecha_entrega, "%d/%m/%Y %H:%M")
                 if formatted_date < datetime.datetime.now():
-                    await interaction.followup.send("La fecha especificada ya ha pasado.", ephemeral=True)
+                    await interaction.followup.send("La fecha especificada ya ha pasado.")
                     return
                 formatted_date_str = fecha_entrega
             except ValueError:
-                await interaction.followup.send("Use el formato: DD/MM/AAAA HH:MM o 'ninguna' para sin fecha.", ephemeral=True)
+                await interaction.followup.send("Use el formato: DD/MM/AAAA HH:MM o 'ninguna' para sin fecha.")
                 return
 
-        from utils.config import SUBJECTS_MAP
         internal_subject = SUBJECTS_MAP.get(materia, materia)
         embed = create_task_embed(titulo, internal_subject, formatted_date_str)
         embed.set_author(name=f"Añadido por {interaction.user.display_name}")
@@ -94,7 +92,7 @@ class Tasks(commands.Cog):
             embed.set_footer(text=f"ID: {task_id} | Estado: Pendiente")
             await original_msg.edit(embed=embed)
         except discord.errors.Forbidden:
-            await interaction.response.send_message("No tengo permisos para enviar mensajes aquí.", ephemeral=True)
+            await interaction.followup.send("No tengo permisos para enviar mensajes aquí.")
             return
 
         # Notificar al canal específico de la materia
@@ -104,7 +102,7 @@ class Tasks(commands.Cog):
                 sub_msg = await subject_channel.send(content=f"🔔 **NUEVA TAREA** para **{materia}**!", embed=embed)
                 self.bot.db.add_task_message(task_id, subject_channel.id, sub_msg.id)
             except discord.errors.Forbidden:
-                await interaction.followup.send(f"No se pudo notificar en {subject_channel.mention} por falta de permisos.", ephemeral=True)
+                await interaction.followup.send(f"No se pudo notificar en {subject_channel.mention} por falta de permisos.")
         
         # Notificar al canal centralizado de fechas de entrega
         dates_channel = find_channel(interaction.guild, "fechas-de-entrega")
@@ -271,7 +269,6 @@ class Tasks(commands.Cog):
     @tarea_eliminar.autocomplete('tarea')
     async def task_delete_autocomplete(self, interaction: discord.Interaction, current: str):
         materia_sel = interaction.namespace.materia
-        from utils.config import SUBJECTS_MAP
         internal_subject = SUBJECTS_MAP.get(materia_sel, "")
         
         tasks = self.bot.db.get_tasks(interaction.guild.id)
