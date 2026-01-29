@@ -58,7 +58,7 @@ class Tasks(commands.Cog):
 
         # Validación y procesamiento del formato de fecha
         clean_date = fecha_entrega.lower().strip()
-        if clean_date in ["no", "no asignada", "n/a", "sin fecha", "vacío", "vacio"]:
+        if clean_date in ["no", "no asignada", "n/a", "sin fecha", "vacío", "vacio", "ninguna", "pendiente"]:
             formatted_date_str = "No asignada"
         else:
             try:
@@ -68,7 +68,7 @@ class Tasks(commands.Cog):
                     return
                 formatted_date_str = fecha_entrega
             except ValueError:
-                await interaction.response.send_message("Use el formato: DD/MM/AAAA HH:MM o 'no' para ninguna.", ephemeral=True)
+                await interaction.response.send_message("Use el formato: DD/MM/AAAA HH:MM o 'ninguna' para sin fecha.", ephemeral=True)
                 return
 
         from utils.config import SUBJECTS_MAP
@@ -179,14 +179,14 @@ class Tasks(commands.Cog):
         new_date = None
         if fecha_entrega:
             clean_date = fecha_entrega.lower().strip()
-            if clean_date in ["no", "no asignada", "n/a", "sin fecha", "vacío", "vacio"]:
+            if clean_date in ["no", "no asignada", "n/a", "sin fecha", "vacío", "vacio", "ninguna", "pendiente"]:
                 new_date = "No asignada"
             else:
                 try:
                     datetime.datetime.strptime(fecha_entrega, "%d/%m/%Y %H:%M")
                     new_date = fecha_entrega
                 except ValueError:
-                    await interaction.response.send_message("Formato de fecha inválido. use DD/MM/AAAA HH:MM o 'no'.", ephemeral=True)
+                    await interaction.response.send_message("Formato de fecha inválido. use DD/MM/AAAA HH:MM o 'ninguna'.", ephemeral=True)
                     return
 
         # Actualizar registros en la base de datos
