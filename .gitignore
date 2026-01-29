@@ -1,0 +1,14 @@
+# Ignorar configuraciones sensibles
+.env
+
+# Archivos de la base de datos (opcional, pero mejor ignorarlos si quieres una DB limpia en git)
+# database/bot.db
+
+# Temporales de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDEs
+.vscode/
+.idea/
