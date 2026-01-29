@@ -3,6 +3,7 @@ from discord.ext import commands
 import os
 from dotenv import load_dotenv
 from database.db_handler import DatabaseHandler
+from keep_alive import keep_alive
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -52,4 +53,7 @@ if __name__ == "__main__":
     if not TOKEN:
         print("Falta el TOKEN en el .env")
     else:
+        # Arrancamos el servidor web para que no se apague
+        keep_alive()
+        # Arranca el bot
         bot.run(TOKEN)
