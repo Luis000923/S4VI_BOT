@@ -38,22 +38,25 @@ class Tasks(commands.Cog):
         recordatorios="¿Activar recordatorios automáticos? (Sí por defecto)"
     )
     async def tarea_crear(self, interaction: discord.Interaction, materia: str, titulo: str, fecha_entrega: str, recordatorios: bool = True):
+        # Diferir la respuesta inmediatamente para evitar el timeout de 3 segundos
+        await interaction.response.defer(ephemeral=False)
+
         # Restricción: solo permitir ejecución en el canal designado de tareas pendientes
         channel_name = interaction.channel.name.lower()
         if "tareas-pendientes" not in channel_name.replace(" ", "-"):
             target_channel = find_channel(interaction.guild, "tareas-pendientes")
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Use este comando en <#{target_channel.id if target_channel else 'pendientes'}>", 
                 ephemeral=True
             )
             return
 
         if not await self.check_permissions(interaction):
-            await interaction.response.send_message("Permisos insuficientes.", ephemeral=True)
+            await interaction.followup.send("Permisos insuficientes.", ephemeral=True)
             return
 
         if materia not in SUBJECTS:
-            await interaction.response.send_message("Selección de materia inválida.", ephemeral=True)
+            await interaction.followup.send("Selección de materia inválida.", ephemeral=True)
             return
 
         # Validación y procesamiento del formato de fecha
@@ -64,11 +67,11 @@ class Tasks(commands.Cog):
             try:
                 formatted_date = datetime.datetime.strptime(fecha_entrega, "%d/%m/%Y %H:%M")
                 if formatted_date < datetime.datetime.now():
-                    await interaction.response.send_message("La fecha especificada ya ha pasado.", ephemeral=True)
+                    await interaction.followup.send("La fecha especificada ya ha pasado.", ephemeral=True)
                     return
                 formatted_date_str = fecha_entrega
             except ValueError:
-                await interaction.response.send_message("Use el formato: DD/MM/AAAA HH:MM o 'ninguna' para sin fecha.", ephemeral=True)
+                await interaction.followup.send("Use el formato: DD/MM/AAAA HH:MM o 'ninguna' para sin fecha.", ephemeral=True)
                 return
 
         from utils.config import SUBJECTS_MAP
@@ -77,8 +80,8 @@ class Tasks(commands.Cog):
         embed.set_author(name=f"Añadido por {interaction.user.display_name}")
         
         try:
-            await interaction.response.send_message(embed=embed)
-            original_msg = await interaction.original_response()
+            # Enviar el mensaje y obtener la referencia al mismo
+            original_msg = await interaction.followup.send(embed=embed)
             
             # Persistir los datos de la tarea en la base de datos
             task_id = self.bot.db.add_task(internal_subject, titulo, formatted_date_str, interaction.user.id, 
@@ -157,8 +160,10 @@ class Tasks(commands.Cog):
         fecha_entrega="Nueva fecha DD/MM/AAAA HH:MM (opcional)"
     )
     async def tarea_editar(self, interaction: discord.Interaction, tarea: str, titulo: str = None, fecha_entrega: str = None):
+        await interaction.response.defer(ephemeral=True)
+        
         if not await self.check_permissions(interaction):
-            await interaction.response.send_message("Permisos insuficientes.", ephemeral=True)
+            await interaction.followup.send("Permisos insuficientes.", ephemeral=True)
             return
 
         try:
@@ -186,7 +191,7 @@ class Tasks(commands.Cog):
                     datetime.datetime.strptime(fecha_entrega, "%d/%m/%Y %H:%M")
                     new_date = fecha_entrega
                 except ValueError:
-                    await interaction.response.send_message("Formato de fecha inválido. use DD/MM/AAAA HH:MM o 'ninguna'.", ephemeral=True)
+                    await interaction.followup.send("Formato de fecha inválido. use DD/MM/AAAA HH:MM o 'ninguna'.", ephemeral=True)
                     return
 
         # Actualizar registros en la base de datos
@@ -209,7 +214,7 @@ class Tasks(commands.Cog):
             except:
                 pass
 
-        await interaction.response.send_message(embed=create_success_embed(f"Tarea #{task_id} actualizada correctamente."), ephemeral=True)
+        await interaction.followup.send(embed=create_success_embed(f"Tarea #{task_id} actualizada correctamente."), ephemeral=True)
 
     @tarea_editar.autocomplete('tarea')
     async def task_edit_autocomplete(self, interaction: discord.Interaction, current: str):
