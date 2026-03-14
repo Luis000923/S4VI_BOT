@@ -13,6 +13,9 @@ Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y 
   - Si se define, el escaneo se concentra en esa semana.
   - Si no se define, usa la semana más reciente disponible (priorizando semana >= 8).
 
+## Límite de uso
+- El comando tiene cooldown de **1 uso cada 30 minutos** (por servidor).
+
 ## Flujo interno
 1. Difiriere respuesta efímera.
 2. Recorre los servidores del bot (o solo el servidor de la interacción).
@@ -28,9 +31,10 @@ Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y 
    - publica embebidos en canal de avisos.
 5. Programa tareas detectadas en el canal correspondiente de materia si no existen aún.
 6. Incluye el link de origen de CVirtual en el embed de la tarea programada.
-7. Si la tarea ya estaba asignada, no la duplica y solo la reporta al usuario que ejecutó el comando.
-8. Si el título es muy largo, lo recorta solo para visualización y conserva el original en DB.
-9. Responde con resumen de actividades nuevas, tareas programadas y tareas ya asignadas.
+7. Extrae también las indicaciones desde la vista de la tarea (bloque de introducción/descripcion) y las incluye en el embed.
+8. Si la tarea ya estaba asignada, no la duplica y solo la reporta al usuario que ejecutó el comando.
+9. Si el título es muy largo, lo recorta solo para visualización y conserva el original en DB.
+10. Responde con resumen de actividades nuevas, tareas programadas y tareas ya asignadas.
 
 ## Funciones relacionadas
 - `_resolve_target_week(...)`

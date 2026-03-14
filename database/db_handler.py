@@ -27,7 +27,8 @@ class DatabaseHandler:
                     guild_id INTEGER NOT NULL,
                     message_id INTEGER,
                     channel_id INTEGER,
-                    reminders_active INTEGER DEFAULT 1
+                    reminders_active INTEGER DEFAULT 1,
+                    source_url TEXT
                 )
             ''')
 
@@ -90,15 +91,23 @@ class DatabaseHandler:
                 cursor.execute('ALTER TABLE tasks ADD COLUMN reminders_active INTEGER DEFAULT 1')
             except sqlite3.OperationalError:
                 pass  # La columna ya existe o la tabla es nueva y ya la tiene
+
+            # Migración: Agregar columna source_url si no existe
+            try:
+                cursor.execute('ALTER TABLE tasks ADD COLUMN source_url TEXT')
+            except sqlite3.OperationalError:
+                pass
             
             conn.commit()
 
     # Registrar una nueva tarea en la base de datos
-    def add_task(self, subject, title, due_date, created_by, guild_id, message_id=None, channel_id=None, reminders_active=1):
+    def add_task(self, subject, title, due_date, created_by, guild_id, message_id=None, channel_id=None, reminders_active=1, source_url=None):
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('INSERT INTO tasks (subject, title, due_date, created_by, guild_id, message_id, channel_id, reminders_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                           (subject, title, due_date, created_by, guild_id, message_id, channel_id, reminders_active))
+            cursor.execute(
+                'INSERT INTO tasks (subject, title, due_date, created_by, guild_id, message_id, channel_id, reminders_active, source_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                (subject, title, due_date, created_by, guild_id, message_id, channel_id, reminders_active, source_url),
+            )
             conn.commit()
             return cursor.lastrowid
 
@@ -118,7 +127,7 @@ class DatabaseHandler:
             return cursor.fetchall()
 
     # Actualizar los atributos de una tarea existente
-    def update_task(self, task_id, title=None, due_date=None, subject=None):
+    def update_task(self, task_id, title=None, due_date=None, subject=None, source_url=None):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             updates = []
@@ -132,6 +141,9 @@ class DatabaseHandler:
             if subject:
                 updates.append("subject = ?")
                 params.append(subject)
+            if source_url is not None:
+                updates.append("source_url = ?")
+                params.append(source_url)
             
             if not updates:
                 return False

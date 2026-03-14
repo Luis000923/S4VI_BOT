@@ -44,11 +44,13 @@ CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
 - Si la tarea ya existe, no la duplica y solo la reporta al usuario que ejecutó el comando.
 - Los títulos largos de tareas se aceptan; el sistema recorta solo para visualización cuando aplica.
 - Las tareas auto-programadas incluyen el link de origen de CVIRTUAL en el embed.
+- Las tareas auto-programadas incluyen también las indicaciones extraídas desde la página de la tarea.
 - Horarios automáticos (`America/El_Salvador`):
   - Lunes 06:00
   - Miércoles 18:00
   - Viernes 23:00
 - Comando manual: `/tareas nuevas [semana]`
+  - Cooldown: 1 uso cada 30 minutos por servidor.
   - Si se especifica `semana`, escanea esa semana exacta (ej. 8).
   - Si no se especifica, escanea la semana más reciente disponible del curso.
   - Prioriza semanas desde la 8 en adelante cuando existen.

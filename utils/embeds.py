@@ -10,7 +10,7 @@ def _clip(text, limit):
     return value[: limit - 3].rstrip() + "..."
 
 # Crear un embed estandarizado para el anuncio de tareas
-def create_task_embed(title, subject, due_date, status="Pendiente", source_url=None):
+def create_task_embed(title, subject, due_date, status="Pendiente", source_url=None, instructions=None):
     # Alternativa a "No asignada" si no se proporciona fecha de entrega
     display_date = "No asignada"
     if due_date and str(due_date).lower() not in ["null", "none", "", "no asignada"]:
@@ -34,6 +34,10 @@ def create_task_embed(title, subject, due_date, status="Pendiente", source_url=N
         description="\n".join(description_lines),
         color=COLOR_PENDING if status == "Pendiente" else COLOR_SUCCESS
     )
+
+    if instructions:
+        embed.add_field(name="Indicaciones", value=_clip(instructions, 1000), inline=False)
+
     embed.set_footer(text=f"Estado: {status}")
     return embed
 

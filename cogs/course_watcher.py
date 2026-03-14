@@ -77,6 +77,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
     @app_commands.command(name="nuevas", description="Forzar escaneo de cursos y detectar nuevos foros/tareas")
     @app_commands.describe(semana="Número de semana a escanear (opcional)")
+    @app_commands.checks.cooldown(1, 1800.0, key=lambda interaction: interaction.guild_id or interaction.user.id)
     async def tareas_nuevas(
         self,
         interaction: discord.Interaction,
@@ -86,6 +87,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         new_items_total = 0
         created_tasks_total = 0
+        updated_tasks_total = 0
         already_assigned_items = []
         for guild in self.bot.guilds:
             if interaction.guild and guild.id != interaction.guild.id:
@@ -98,9 +100,10 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             )
             new_items_total += report["new_activities"]
             created_tasks_total += report["created_tasks"]
+            updated_tasks_total += report.get("updated_tasks", 0)
             already_assigned_items.extend(report["already_assigned"])
 
-        if new_items_total == 0 and created_tasks_total == 0 and not already_assigned_items:
+        if new_items_total == 0 and created_tasks_total == 0 and updated_tasks_total == 0 and not already_assigned_items:
             week_text = f" en Semana {semana}" if semana is not None else ""
             await interaction.followup.send(
                 f"No se detectaron actividades nuevas (Foro/Tarea){week_text}.",
@@ -111,6 +114,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         summary_lines = [
             f"Escaneo completado: {new_items_total} actividades nuevas detectadas.",
             f"Tareas programadas en canales de materia: {created_tasks_total}.",
+            f"Tareas existentes actualizadas por cambios en CVirtual: {updated_tasks_total}.",
         ]
 
         if already_assigned_items:
@@ -122,6 +126,19 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
 
+    @tareas_nuevas.error
+    async def tareas_nuevas_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CommandOnCooldown):
+            wait_seconds = max(1, int(error.retry_after))
+            minutes = wait_seconds // 60
+            seconds = wait_seconds % 60
+            await interaction.response.send_message(
+                f"Este comando puede usarse 1 vez cada 30 minutos. Intenta de nuevo en {minutes}m {seconds}s.",
+                ephemeral=True,
+            )
+            return
+        raise error
+
     async def _scan_and_notify(
         self,
         guild: discord.Guild,
@@ -129,7 +146,9 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         command_user_id: int | None = None,
     ) -> dict:
         channel = self._resolve_updates_channel(guild)
-        new_items = await self._scan_courses_for_guild(guild.id, requested_week=requested_week)
+        scan_result = await self._scan_courses_for_guild(guild.id, requested_week=requested_week)
+        new_items = scan_result["new_items"]
+        detected_items = scan_result["detected_items"]
 
         if channel:
             for item in new_items:
@@ -138,18 +157,20 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         task_report = await self._schedule_detected_tasks(
             guild,
-            new_items,
+            detected_items,
             command_user_id=command_user_id,
         )
 
         return {
             "new_activities": len(new_items),
             "created_tasks": task_report["created_tasks"],
+            "updated_tasks": task_report.get("updated_tasks", 0),
             "already_assigned": task_report["already_assigned"],
         }
 
     async def _scan_courses_for_guild(self, guild_id: int, requested_week: int | None = None):
         new_items = []
+        detected_items = []
 
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -184,7 +205,11 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
                 for item in items:
                     if item["activity_type"] == "TAREA":
-                        item["due_date"] = await self._extract_due_date_from_assignment(session, item["url"])
+                        details = await self._extract_assignment_details(session, item["url"])
+                        item["due_date"] = details["due_date"]
+                        item["instructions"] = details["instructions"]
+
+                    detected_items.append(item)
 
                 for item in items:
                     item_hash = self._hash_item(item)
@@ -200,20 +225,31 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     if created:
                         new_items.append(item)
 
-        return new_items
+        return {
+            "new_items": new_items,
+            "detected_items": detected_items,
+        }
 
     async def _schedule_detected_tasks(self, guild: discord.Guild, items: list[dict], command_user_id: int | None = None):
         created_tasks = 0
+        updated_tasks = 0
         already_assigned = []
 
         if not items:
-            return {"created_tasks": 0, "already_assigned": []}
+            return {"created_tasks": 0, "updated_tasks": 0, "already_assigned": []}
 
-        existing_keys = set()
-        for task in self.bot.db.get_tasks(guild.id):
+        tasks_cache = self.bot.db.get_tasks(guild.id)
+        existing_by_key = {}
+        existing_by_source_url = {}
+        for task in tasks_cache:
             subject = (task[1] or "").strip().lower()
-            title = self._normalize_task_title(task[2] or "")
-            existing_keys.add((subject, title))
+            normalized_title = self._normalize_task_title(task[2] or "")
+            existing_by_key[(subject, normalized_title)] = task
+            source_url = ""
+            if len(task) > 9 and task[9]:
+                source_url = str(task[9]).strip()
+            if source_url:
+                existing_by_source_url[source_url] = task
 
         actor_id = command_user_id or getattr(self.bot.user, "id", 0) or 0
 
@@ -227,19 +263,68 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 continue
 
             task_key = (subject.strip().lower(), self._normalize_task_title(title))
-            if task_key in existing_keys:
-                if command_user_id:
+            due_date = item.get("due_date") or "No asignada"
+            instructions = item.get("instructions")
+            source_url = item.get("url")
+
+            existing_task = None
+            if source_url:
+                existing_task = existing_by_source_url.get(source_url)
+            if not existing_task:
+                existing_task = existing_by_key.get(task_key)
+
+            if existing_task:
+                task_id = existing_task[0]
+                current_subject = existing_task[1] or ""
+                current_title = existing_task[2] or ""
+                current_due = existing_task[3] or ""
+                current_source_url = ""
+                if len(existing_task) > 9 and existing_task[9]:
+                    current_source_url = str(existing_task[9]).strip()
+
+                should_update_title = current_title.strip() != title.strip()
+                should_update_subject = current_subject.strip() != subject.strip()
+                should_update_due = current_due.strip() != due_date.strip()
+                should_update_source_url = bool(source_url) and current_source_url != source_url
+
+                if should_update_title or should_update_subject or should_update_due or should_update_source_url:
+                    self.bot.db.update_task(
+                        task_id,
+                        title=title if should_update_title else None,
+                        due_date=due_date if should_update_due else None,
+                        subject=subject if should_update_subject else None,
+                        source_url=source_url if should_update_source_url else None,
+                    )
+
+                    await self._refresh_task_messages(
+                        guild,
+                        task_id,
+                        subject,
+                        title,
+                        due_date,
+                        source_url=source_url,
+                        instructions=instructions,
+                    )
+
+                    updated_tasks += 1
+                elif command_user_id:
                     already_assigned.append({"subject": subject, "title": title})
+
                 continue
 
-            due_date = item.get("due_date") or "No asignada"
             target_channel = find_channel(guild, subject)
             if not target_channel:
                 target_channel = find_channel(guild, CHANNELS.get("PENDING", ""))
             if not target_channel:
                 continue
 
-            embed = create_task_embed(title, subject, due_date, source_url=item.get("url"))
+            embed = create_task_embed(
+                title,
+                subject,
+                due_date,
+                source_url=item.get("url"),
+                instructions=item.get("instructions"),
+            )
             embed.set_author(name="Detectado automáticamente desde CVirtual")
 
             try:
@@ -256,6 +341,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 msg.id,
                 target_channel.id,
                 1,
+                source_url=source_url,
             )
             self.bot.db.add_task_message(task_id, target_channel.id, msg.id)
 
@@ -274,17 +360,101 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     pass
 
             created_tasks += 1
-            existing_keys.add(task_key)
+            existing_by_key[task_key] = (
+                task_id,
+                subject,
+                title,
+                due_date,
+                None,
+                None,
+                None,
+                None,
+                None,
+                source_url,
+            )
+            if source_url:
+                existing_by_source_url[source_url] = existing_by_key[task_key]
 
-        return {"created_tasks": created_tasks, "already_assigned": already_assigned}
+        return {
+            "created_tasks": created_tasks,
+            "updated_tasks": updated_tasks,
+            "already_assigned": already_assigned,
+        }
 
-    async def _extract_due_date_from_assignment(self, session: aiohttp.ClientSession, assignment_url: str):
+    async def _refresh_task_messages(
+        self,
+        guild: discord.Guild,
+        task_id: int,
+        subject: str,
+        title: str,
+        due_date: str,
+        source_url: str | None = None,
+        instructions: str | None = None,
+    ):
+        tracked_messages = self.bot.db.get_task_messages(task_id)
+        if not tracked_messages:
+            return
+
+        updated_embed = create_task_embed(
+            title,
+            subject,
+            due_date,
+            source_url=source_url,
+            instructions=instructions,
+        )
+        updated_embed.set_footer(text=f"ID: {task_id} | Estado: Pendiente")
+
+        for channel_id, message_id in tracked_messages:
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                continue
+            try:
+                message = await channel.fetch_message(message_id)
+                await message.edit(embed=updated_embed)
+            except Exception:
+                continue
+
+    async def _extract_assignment_details(self, session: aiohttp.ClientSession, assignment_url: str):
         html = await self._fetch_course_html(session, assignment_url)
         if not html:
-            return "No asignada"
+            return {
+                "due_date": "No asignada",
+                "instructions": None,
+            }
 
-        detected = self._extract_due_date_from_html(html)
-        return detected or "No asignada"
+        detected_due_date = self._extract_due_date_from_html(html)
+        detected_instructions = self._extract_instructions_from_html(html)
+        return {
+            "due_date": detected_due_date or "No asignada",
+            "instructions": detected_instructions,
+        }
+
+    def _extract_instructions_from_html(self, html: str):
+        soup = BeautifulSoup(html, "html.parser")
+        selectors = [
+            "#intro .no-overflow",
+            "#intro",
+            ".activity-description .no-overflow",
+            ".activity-description",
+            "div.assignintro",
+            ".assignintro",
+            "[data-region='activity-description']",
+        ]
+
+        for selector in selectors:
+            node = soup.select_one(selector)
+            if not node:
+                continue
+
+            text = re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+            if not text:
+                continue
+
+            cleaned = re.sub(r"^(indicaciones|instrucciones|description)\s*:\s*", "", text, flags=re.IGNORECASE)
+            if cleaned:
+                return cleaned
+
+        return None
 
     def _extract_due_date_from_html(self, html: str):
         soup = BeautifulSoup(html, "html.parser")
@@ -302,6 +472,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 for key in [
                     "fecha de entrega",
                     "fecha de cierre",
+                    "cierre",
                     "fecha límite",
                     "fecha limite",
                     "due date",
