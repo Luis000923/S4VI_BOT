@@ -6,6 +6,7 @@
 
 ## Objetivo
 Forzar escaneo de CVirtual para detectar actividades nuevas de tipo foro y tarea.
+Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y programarlas automáticamente en el canal de la materia.
 
 ## Parámetros
 - `semana` (opcional, entero 1..60):
@@ -21,10 +22,15 @@ Forzar escaneo de CVirtual para detectar actividades nuevas de tipo foro y tarea
    - obtiene HTML de cada curso,
    - resuelve semana objetivo,
    - consulta URL por sección (`...&section=N`),
-   - extrae actividades foro/tarea,
+  - extrae actividades foro/tarea,
+  - para tareas, consulta su detalle y extrae `Fecha de entrega` o `Fecha de cierre`,
    - deduplica por hash en DB,
    - publica embebidos en canal de avisos.
-5. Responde con total de nuevas actividades detectadas.
+5. Programa tareas detectadas en el canal correspondiente de materia si no existen aún.
+6. Incluye el link de origen de CVirtual en el embed de la tarea programada.
+7. Si la tarea ya estaba asignada, no la duplica y solo la reporta al usuario que ejecutó el comando.
+8. Si el título es muy largo, lo recorta solo para visualización y conserva el original en DB.
+9. Responde con resumen de actividades nuevas, tareas programadas y tareas ya asignadas.
 
 ## Funciones relacionadas
 - `_resolve_target_week(...)`
@@ -38,4 +44,4 @@ Forzar escaneo de CVirtual para detectar actividades nuevas de tipo foro y tarea
 - Estructura HTML variable de Moodle (mitigada con selectores de fallback).
 
 ## Resultado esperado
-Publicación de nuevas actividades, sin duplicados, en el canal de avisos de tareas.
+Publicación de nuevas actividades, programación automática de tareas por materia y control de duplicados.

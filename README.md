@@ -37,9 +37,13 @@ CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
 
 ## MONITOREO DE CURSOS (NUEVO)
 - El cog `course_watcher.py` revisa cursos de CVIRTUAL y detecta actividades de tipo **Foro** y **Tarea**.
-- Extrae curso, semana, tipo, título y enlace.
+- Extrae curso, semana, tipo, título, enlace y fecha de entrega/cierre (cuando Moodle la muestra).
 - Guarda un hash en SQLite para no repetir notificaciones.
 - Publica novedades en el canal de avisos de tareas.
+- Si detecta una **TAREA** nueva, la programa automáticamente en el canal de materia correspondiente.
+- Si la tarea ya existe, no la duplica y solo la reporta al usuario que ejecutó el comando.
+- Los títulos largos de tareas se aceptan; el sistema recorta solo para visualización cuando aplica.
+- Las tareas auto-programadas incluyen el link de origen de CVIRTUAL en el embed.
 - Horarios automáticos (`America/El_Salvador`):
   - Lunes 06:00
   - Miércoles 18:00

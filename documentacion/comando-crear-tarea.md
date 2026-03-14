@@ -9,12 +9,12 @@ Crear una tarea nueva, publicarla y persistirla en base de datos con sus mensaje
 
 ## Parámetros
 - `materia`: una materia válida de `SUBJECTS`.
-- `titulo`: texto de la tarea (máx. 250).
+- `titulo`: texto de la tarea (sin límite funcional en la lógica del comando; se aplica recorte visual cuando es necesario para mostrarlo en embeds/listados).
 - `fecha_entrega`: `DD/MM/AAAA HH:MM` o equivalente a sin fecha (`ninguna`, `sin fecha`, etc.).
 - `recordatorios`: booleano para activar recordatorios automáticos.
 
 ## Flujo interno
-1. Valida longitud del título.
+1. Valida canal, permisos y materia.
 2. Restringe ejecución al canal de tareas pendientes.
 3. Verifica permisos con `check_permissions(...)`.
 4. Valida materia.

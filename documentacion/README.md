@@ -21,3 +21,7 @@ Esta carpeta contiene un archivo por comando del bot, explicando:
 
 ## Informe técnico adicional
 - `informe-escaneo-semanas.md` → análisis detallado del escaneo por semanas, librerías y flujo técnico del monitor de CVirtual.
+
+## Notas recientes
+- `/crear-tarea` y `/editar-tarea` aceptan títulos largos; el recorte se aplica solo en visualización cuando es necesario.
+- `/tareas nuevas` puede auto-programar tareas detectadas por CVirtual con fecha de entrega/cierre y link fuente.

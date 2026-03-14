@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils.config import CHANNELS, find_channel
+from utils.embeds import create_task_embed
 
 COURSES = {
     "INFRAESTRUCTURA DE RED": "https://www.cvirtualuees.edu.sv/course/view.php?id=23879",
@@ -33,6 +34,14 @@ SCHEDULE_SLOTS = {
 TIMEZONE_NAME = "America/El_Salvador"
 WEEK_REGEX = re.compile(r"semana\s*\d+", re.IGNORECASE)
 MIN_WEEK_TO_SCAN = 8
+
+COURSE_SUBJECT_MAP = {
+    "INFRAESTRUCTURA DE RED": "Infraestructura de Red",
+    "ETICA": "Ética",
+    "FUNDAMENTOS DE PROGRAMACION": "Programación",
+    "MATEMATICA": "Matemática",
+    "SEGURIDAD DE LA INFORMACION": "Ciberseguridad",
+}
 
 
 class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="Escaneo de cursos virtuales"):
@@ -76,14 +85,22 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         await interaction.response.defer(ephemeral=True)
 
         new_items_total = 0
+        created_tasks_total = 0
+        already_assigned_items = []
         for guild in self.bot.guilds:
             if interaction.guild and guild.id != interaction.guild.id:
                 continue
 
-            created = await self._scan_and_notify(guild, requested_week=semana)
-            new_items_total += created
+            report = await self._scan_and_notify(
+                guild,
+                requested_week=semana,
+                command_user_id=interaction.user.id,
+            )
+            new_items_total += report["new_activities"]
+            created_tasks_total += report["created_tasks"]
+            already_assigned_items.extend(report["already_assigned"])
 
-        if new_items_total == 0:
+        if new_items_total == 0 and created_tasks_total == 0 and not already_assigned_items:
             week_text = f" en Semana {semana}" if semana is not None else ""
             await interaction.followup.send(
                 f"No se detectaron actividades nuevas (Foro/Tarea){week_text}.",
@@ -91,22 +108,45 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             )
             return
 
-        await interaction.followup.send(
-            f"Escaneo completado. Se detectaron {new_items_total} actividades nuevas y se publicaron en el canal de avisos.",
-            ephemeral=True,
+        summary_lines = [
+            f"Escaneo completado: {new_items_total} actividades nuevas detectadas.",
+            f"Tareas programadas en canales de materia: {created_tasks_total}.",
+        ]
+
+        if already_assigned_items:
+            summary_lines.append("\nTareas ya asignadas (mostradas solo para ti):")
+            for item in already_assigned_items[:12]:
+                summary_lines.append(f"- {item['subject']}: {item['title']}")
+            if len(already_assigned_items) > 12:
+                summary_lines.append(f"- ... y {len(already_assigned_items) - 12} más")
+
+        await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
+
+    async def _scan_and_notify(
+        self,
+        guild: discord.Guild,
+        requested_week: int | None = None,
+        command_user_id: int | None = None,
+    ) -> dict:
+        channel = self._resolve_updates_channel(guild)
+        new_items = await self._scan_courses_for_guild(guild.id, requested_week=requested_week)
+
+        if channel:
+            for item in new_items:
+                embed = self._build_activity_embed(item)
+                await channel.send(embed=embed)
+
+        task_report = await self._schedule_detected_tasks(
+            guild,
+            new_items,
+            command_user_id=command_user_id,
         )
 
-    async def _scan_and_notify(self, guild: discord.Guild, requested_week: int | None = None) -> int:
-        channel = self._resolve_updates_channel(guild)
-        if not channel:
-            return 0
-
-        new_items = await self._scan_courses_for_guild(guild.id, requested_week=requested_week)
-        for item in new_items:
-            embed = self._build_activity_embed(item)
-            await channel.send(embed=embed)
-
-        return len(new_items)
+        return {
+            "new_activities": len(new_items),
+            "created_tasks": task_report["created_tasks"],
+            "already_assigned": task_report["already_assigned"],
+        }
 
     async def _scan_courses_for_guild(self, guild_id: int, requested_week: int | None = None):
         new_items = []
@@ -141,6 +181,11 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     target_html,
                     forced_week_name=target_week_name,
                 )
+
+                for item in items:
+                    if item["activity_type"] == "TAREA":
+                        item["due_date"] = await self._extract_due_date_from_assignment(session, item["url"])
+
                 for item in items:
                     item_hash = self._hash_item(item)
                     created = self.bot.db.add_course_watch_item(
@@ -156,6 +201,243 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                         new_items.append(item)
 
         return new_items
+
+    async def _schedule_detected_tasks(self, guild: discord.Guild, items: list[dict], command_user_id: int | None = None):
+        created_tasks = 0
+        already_assigned = []
+
+        if not items:
+            return {"created_tasks": 0, "already_assigned": []}
+
+        existing_keys = set()
+        for task in self.bot.db.get_tasks(guild.id):
+            subject = (task[1] or "").strip().lower()
+            title = self._normalize_task_title(task[2] or "")
+            existing_keys.add((subject, title))
+
+        actor_id = command_user_id or getattr(self.bot.user, "id", 0) or 0
+
+        for item in items:
+            if item.get("activity_type") != "TAREA":
+                continue
+
+            subject = COURSE_SUBJECT_MAP.get(item.get("course_name", ""), item.get("course_name", "").title())
+            title = (item.get("title") or "").strip()
+            if not title:
+                continue
+
+            task_key = (subject.strip().lower(), self._normalize_task_title(title))
+            if task_key in existing_keys:
+                if command_user_id:
+                    already_assigned.append({"subject": subject, "title": title})
+                continue
+
+            due_date = item.get("due_date") or "No asignada"
+            target_channel = find_channel(guild, subject)
+            if not target_channel:
+                target_channel = find_channel(guild, CHANNELS.get("PENDING", ""))
+            if not target_channel:
+                continue
+
+            embed = create_task_embed(title, subject, due_date, source_url=item.get("url"))
+            embed.set_author(name="Detectado automáticamente desde CVirtual")
+
+            try:
+                msg = await target_channel.send(content="📥 **Nueva tarea detectada automáticamente**", embed=embed)
+            except Exception:
+                continue
+
+            task_id = self.bot.db.add_task(
+                subject,
+                title,
+                due_date,
+                actor_id,
+                guild.id,
+                msg.id,
+                target_channel.id,
+                1,
+            )
+            self.bot.db.add_task_message(task_id, target_channel.id, msg.id)
+
+            embed.set_footer(text=f"ID: {task_id} | Estado: Pendiente")
+            try:
+                await msg.edit(embed=embed)
+            except Exception:
+                pass
+
+            dates_channel = find_channel(guild, "fechas-de-entrega")
+            if dates_channel:
+                try:
+                    date_msg = await dates_channel.send(embed=embed)
+                    self.bot.db.add_task_message(task_id, dates_channel.id, date_msg.id)
+                except Exception:
+                    pass
+
+            created_tasks += 1
+            existing_keys.add(task_key)
+
+        return {"created_tasks": created_tasks, "already_assigned": already_assigned}
+
+    async def _extract_due_date_from_assignment(self, session: aiohttp.ClientSession, assignment_url: str):
+        html = await self._fetch_course_html(session, assignment_url)
+        if not html:
+            return "No asignada"
+
+        detected = self._extract_due_date_from_html(html)
+        return detected or "No asignada"
+
+    def _extract_due_date_from_html(self, html: str):
+        soup = BeautifulSoup(html, "html.parser")
+        date_candidates = []
+
+        for row in soup.select("tr"):
+            header = row.select_one("th")
+            value_cell = row.select_one("td")
+            if not header or not value_cell:
+                continue
+
+            header_text = header.get_text(" ", strip=True).lower()
+            if any(
+                key in header_text
+                for key in [
+                    "fecha de entrega",
+                    "fecha de cierre",
+                    "fecha límite",
+                    "fecha limite",
+                    "due date",
+                    "cut-off date",
+                    "closing date",
+                ]
+            ):
+                date_candidates.append(value_cell.get_text(" ", strip=True))
+
+        for candidate in date_candidates:
+            parsed = self._parse_due_date_text(candidate)
+            if parsed:
+                return parsed
+
+        return None
+
+    def _parse_due_date_text(self, raw_text: str):
+        if not raw_text:
+            return None
+
+        text = re.sub(r"\s+", " ", raw_text).strip()
+        lowered = text.lower()
+        if any(token in lowered for token in ["no disponible", "not available", "sin fecha"]):
+            return None
+
+        for date_format in [
+            "%d/%m/%Y %H:%M",
+            "%d-%m-%Y %H:%M",
+            "%Y-%m-%d %H:%M",
+            "%d/%m/%Y %I:%M %p",
+            "%d-%m-%Y %I:%M %p",
+        ]:
+            try:
+                parsed = datetime.datetime.strptime(text, date_format)
+                return parsed.strftime("%d/%m/%Y %H:%M")
+            except ValueError:
+                pass
+
+        month_map_es = {
+            "enero": 1,
+            "febrero": 2,
+            "marzo": 3,
+            "abril": 4,
+            "mayo": 5,
+            "junio": 6,
+            "julio": 7,
+            "agosto": 8,
+            "septiembre": 9,
+            "setiembre": 9,
+            "octubre": 10,
+            "noviembre": 11,
+            "diciembre": 12,
+        }
+
+        month_map_en = {
+            "january": 1,
+            "february": 2,
+            "march": 3,
+            "april": 4,
+            "may": 5,
+            "june": 6,
+            "july": 7,
+            "august": 8,
+            "september": 9,
+            "october": 10,
+            "november": 11,
+            "december": 12,
+        }
+
+        es_match = re.search(
+            r"(\d{1,2})\s+de\s+([a-záéíóú]+)\s+de\s+(\d{4}).*?(\d{1,2}):(\d{2})(?:\s*([ap]\.?(?:\s*)m\.?)?)?",
+            lowered,
+            re.IGNORECASE,
+        )
+        if es_match:
+            day = int(es_match.group(1))
+            month_name = es_match.group(2).lower()
+            year = int(es_match.group(3))
+            hour = int(es_match.group(4))
+            minute = int(es_match.group(5))
+            ampm = (es_match.group(6) or "").replace(".", "").replace(" ", "")
+
+            month = month_map_es.get(month_name)
+            if month:
+                if ampm == "pm" and hour < 12:
+                    hour += 12
+                if ampm == "am" and hour == 12:
+                    hour = 0
+                try:
+                    parsed = datetime.datetime(year, month, day, hour, minute)
+                    return parsed.strftime("%d/%m/%Y %H:%M")
+                except ValueError:
+                    pass
+
+        en_match = re.search(
+            r"(\d{1,2})\s+([a-z]+)\s+(\d{4}).*?(\d{1,2}):(\d{2})(?:\s*([ap]m))?",
+            lowered,
+            re.IGNORECASE,
+        )
+        if en_match:
+            day = int(en_match.group(1))
+            month_name = en_match.group(2).lower()
+            year = int(en_match.group(3))
+            hour = int(en_match.group(4))
+            minute = int(en_match.group(5))
+            ampm = (en_match.group(6) or "").lower()
+
+            month = month_map_en.get(month_name)
+            if month:
+                if ampm == "pm" and hour < 12:
+                    hour += 12
+                if ampm == "am" and hour == 12:
+                    hour = 0
+                try:
+                    parsed = datetime.datetime(year, month, day, hour, minute)
+                    return parsed.strftime("%d/%m/%Y %H:%M")
+                except ValueError:
+                    pass
+
+        generic_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4}).*?(\d{1,2}):(\d{2})", lowered)
+        if generic_match:
+            day = int(generic_match.group(1))
+            month = int(generic_match.group(2))
+            year = int(generic_match.group(3))
+            hour = int(generic_match.group(4))
+            minute = int(generic_match.group(5))
+            try:
+                parsed = datetime.datetime(year, month, day, hour, minute)
+                return parsed.strftime("%d/%m/%Y %H:%M")
+            except ValueError:
+                pass
+
+        return None
+
+    def _normalize_task_title(self, title: str):
+        return " ".join((title or "").strip().lower().split())
 
     async def _authenticate_session(self, session: aiohttp.ClientSession):
         username = os.getenv("CVIRTUAL_USER", "").strip()

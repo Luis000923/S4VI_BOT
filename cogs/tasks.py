@@ -10,6 +10,12 @@ class Tasks(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    def _clip_text(self, text: str, limit: int):
+        value = str(text or "").strip()
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3].rstrip() + "..."
+
     # Verificar permisos de usuario (Propietario, Administrador o roles específicos)
     async def check_permissions(self, interaction: discord.Interaction):
         if interaction.user == interaction.guild.owner:
@@ -38,11 +44,6 @@ class Tasks(commands.Cog):
         recordatorios="¿Activar recordatorios automáticos? (Sí por defecto)"
     )
     async def tarea_crear(self, interaction: discord.Interaction, materia: str, titulo: str, fecha_entrega: str, recordatorios: bool = True):
-        # 1. Validaciones rápidas (Respuestas efímeras)
-        if len(titulo) > 250:
-            await interaction.response.send_message("El título de la tarea es demasiado largo (máximo 250 caracteres).", ephemeral=True)
-            return
-
         channel_name = interaction.channel.name.lower()
         if "tareas-pendientes" not in channel_name.replace(" ", "-"):
             target_channel = find_channel(interaction.guild, "tareas-pendientes")
@@ -149,8 +150,10 @@ class Tasks(commands.Cog):
             if user_enrollments and subject not in user_enrollments:
                 continue
 
+            display_title = self._clip_text(title, 220)
+
             embed.add_field(
-                name=f"#{tid} - {title}",
+                name=f"#{tid} - {display_title}",
                 value=f"**Materia:** {subject}\n**Entrega:** {due_date}",
                 inline=False
             )
@@ -171,10 +174,6 @@ class Tasks(commands.Cog):
     async def tarea_editar(self, interaction: discord.Interaction, tarea: str, titulo: str = None, fecha_entrega: str = None):
         if not await self.check_permissions(interaction):
             await interaction.response.send_message("Permisos insuficientes.", ephemeral=True)
-            return
-
-        if titulo and len(titulo) > 250:
-            await interaction.response.send_message("El título es demasiado largo (máximo 250 caracteres).", ephemeral=True)
             return
 
         try:
@@ -241,7 +240,7 @@ class Tasks(commands.Cog):
         for t in tasks:
             label = f"{t[0]}: {t[2]} ({t[1]})"
             if current.lower() in label.lower():
-                choices.append(app_commands.Choice(name=label, value=str(t[0])))
+                choices.append(app_commands.Choice(name=self._clip_text(label, 100), value=str(t[0])))
         return choices[:25]
 
     # Comando para eliminar una tarea y sus mensajes asociados
@@ -300,7 +299,7 @@ class Tasks(commands.Cog):
                 
             label = f"{t[0]}: {t[2]} ({t[1]})"
             if current.lower() in label.lower():
-                choices.append(app_commands.Choice(name=label, value=str(t[0])))
+                choices.append(app_commands.Choice(name=self._clip_text(label, 100), value=str(t[0])))
         return choices[:25]
 
 async def setup(bot):
