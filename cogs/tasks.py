@@ -3,12 +3,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.config import SUBJECTS, CHANNELS, ROLES, find_channel, SUBJECTS_MAP
+from utils.date_ai import DueDateAI
 from utils.embeds import create_task_embed, create_success_embed, create_error_embed
 import datetime
 
 class Tasks(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.due_date_ai = DueDateAI(default_hour=12, default_minute=0)
 
     def _clip_text(self, text: str, limit: int):
         value = str(text or "").strip()
@@ -66,14 +68,21 @@ class Tasks(commands.Cog):
         if clean_date in ["no", "no asignada", "n/a", "sin fecha", "vacío", "vacio", "ninguna", "pendiente"]:
             formatted_date_str = "No asignada"
         else:
+            normalized_date = self.due_date_ai.normalize(fecha_entrega)
+            if not normalized_date:
+                await interaction.response.send_message(
+                    "Fecha inválida. Ejemplos válidos: DD/MM/AAAA HH:MM, DD-MM-AAAA, '18 de marzo de 2026 23:59'.",
+                    ephemeral=True,
+                )
+                return
             try:
-                formatted_date = datetime.datetime.strptime(fecha_entrega, "%d/%m/%Y %H:%M")
+                formatted_date = datetime.datetime.strptime(normalized_date, "%d/%m/%Y %H:%M")
                 if formatted_date < datetime.datetime.now():
                     await interaction.response.send_message("La fecha especificada ya ha pasado.", ephemeral=True)
                     return
-                formatted_date_str = fecha_entrega
+                formatted_date_str = normalized_date
             except ValueError:
-                await interaction.response.send_message("Use el formato: DD/MM/AAAA HH:MM o 'ninguna' para sin fecha.", ephemeral=True)
+                await interaction.response.send_message("No se pudo normalizar la fecha para recordatorios.", ephemeral=True)
                 return
 
         # 2. Diferir respuesta para el trabajo pesado
@@ -198,12 +207,14 @@ class Tasks(commands.Cog):
             if clean_date in ["no", "no asignada", "n/a", "sin fecha", "vacío", "vacio", "ninguna", "pendiente"]:
                 new_date = "No asignada"
             else:
-                try:
-                    datetime.datetime.strptime(fecha_entrega, "%d/%m/%Y %H:%M")
-                    new_date = fecha_entrega
-                except ValueError:
-                    await interaction.response.send_message("Formato de fecha inválido. use DD/MM/AAAA HH:MM o 'ninguna'.", ephemeral=True)
+                normalized_date = self.due_date_ai.normalize(fecha_entrega)
+                if not normalized_date:
+                    await interaction.response.send_message(
+                        "Formato de fecha inválido. Ejemplos: DD/MM/AAAA HH:MM, DD-MM-AAAA, '18 de marzo de 2026 23:59'.",
+                        ephemeral=True,
+                    )
                     return
+                new_date = normalized_date
 
         # Diferir después de validaciones
         try:

@@ -12,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils.config import CHANNELS, find_channel
+from utils.date_ai import DueDateAI
 from utils.embeds import create_task_embed
 
 COURSES = {
@@ -48,6 +49,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.timezone = ZoneInfo(TIMEZONE_NAME)
+        self.due_date_ai = DueDateAI(default_hour=12, default_minute=0)
         self.last_slot_processed = None
         self.scan_courses_task.start()
 
@@ -460,29 +462,57 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         soup = BeautifulSoup(html, "html.parser")
         date_candidates = []
 
+        due_label_priority = {
+            "fecha de entrega": 1,
+            "fecha de cierre": 1,
+            "fecha límite": 1,
+            "fecha limite": 1,
+            "vencimiento": 1,
+            "cierre": 2,
+            "due date": 1,
+            "cut-off date": 1,
+            "closing date": 1,
+        }
+
+        def get_label_priority(label: str):
+            normalized = (label or "").strip().lower()
+            for key, priority in due_label_priority.items():
+                if key in normalized:
+                    return priority
+            return None
+
         for row in soup.select("tr"):
             header = row.select_one("th")
             value_cell = row.select_one("td")
             if not header or not value_cell:
                 continue
 
-            header_text = header.get_text(" ", strip=True).lower()
-            if any(
-                key in header_text
-                for key in [
-                    "fecha de entrega",
-                    "fecha de cierre",
-                    "cierre",
-                    "fecha límite",
-                    "fecha limite",
-                    "due date",
-                    "cut-off date",
-                    "closing date",
-                ]
-            ):
-                date_candidates.append(value_cell.get_text(" ", strip=True))
+            header_text = header.get_text(" ", strip=True)
+            priority = get_label_priority(header_text)
+            if priority is None:
+                continue
+            date_candidates.append((priority, value_cell.get_text(" ", strip=True)))
 
-        for candidate in date_candidates:
+        for strong_node in soup.select("strong"):
+            label_text = strong_node.get_text(" ", strip=True)
+            priority = get_label_priority(label_text)
+            if priority is None:
+                continue
+
+            parent = strong_node.parent
+            if not parent:
+                continue
+
+            row_text = parent.get_text(" ", strip=True)
+            value_text = re.sub(r"^\s*[^:]{1,80}:\s*", "", row_text).strip()
+            if not value_text:
+                continue
+
+            date_candidates.append((priority, value_text))
+
+        date_candidates.sort(key=lambda item: item[0])
+
+        for _, candidate in date_candidates:
             parsed = self._parse_due_date_text(candidate)
             if parsed:
                 return parsed
@@ -490,122 +520,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         return None
 
     def _parse_due_date_text(self, raw_text: str):
-        if not raw_text:
-            return None
-
-        text = re.sub(r"\s+", " ", raw_text).strip()
-        lowered = text.lower()
-        if any(token in lowered for token in ["no disponible", "not available", "sin fecha"]):
-            return None
-
-        for date_format in [
-            "%d/%m/%Y %H:%M",
-            "%d-%m-%Y %H:%M",
-            "%Y-%m-%d %H:%M",
-            "%d/%m/%Y %I:%M %p",
-            "%d-%m-%Y %I:%M %p",
-        ]:
-            try:
-                parsed = datetime.datetime.strptime(text, date_format)
-                return parsed.strftime("%d/%m/%Y %H:%M")
-            except ValueError:
-                pass
-
-        month_map_es = {
-            "enero": 1,
-            "febrero": 2,
-            "marzo": 3,
-            "abril": 4,
-            "mayo": 5,
-            "junio": 6,
-            "julio": 7,
-            "agosto": 8,
-            "septiembre": 9,
-            "setiembre": 9,
-            "octubre": 10,
-            "noviembre": 11,
-            "diciembre": 12,
-        }
-
-        month_map_en = {
-            "january": 1,
-            "february": 2,
-            "march": 3,
-            "april": 4,
-            "may": 5,
-            "june": 6,
-            "july": 7,
-            "august": 8,
-            "september": 9,
-            "october": 10,
-            "november": 11,
-            "december": 12,
-        }
-
-        es_match = re.search(
-            r"(\d{1,2})\s+de\s+([a-záéíóú]+)\s+de\s+(\d{4}).*?(\d{1,2}):(\d{2})(?:\s*([ap]\.?(?:\s*)m\.?)?)?",
-            lowered,
-            re.IGNORECASE,
-        )
-        if es_match:
-            day = int(es_match.group(1))
-            month_name = es_match.group(2).lower()
-            year = int(es_match.group(3))
-            hour = int(es_match.group(4))
-            minute = int(es_match.group(5))
-            ampm = (es_match.group(6) or "").replace(".", "").replace(" ", "")
-
-            month = month_map_es.get(month_name)
-            if month:
-                if ampm == "pm" and hour < 12:
-                    hour += 12
-                if ampm == "am" and hour == 12:
-                    hour = 0
-                try:
-                    parsed = datetime.datetime(year, month, day, hour, minute)
-                    return parsed.strftime("%d/%m/%Y %H:%M")
-                except ValueError:
-                    pass
-
-        en_match = re.search(
-            r"(\d{1,2})\s+([a-z]+)\s+(\d{4}).*?(\d{1,2}):(\d{2})(?:\s*([ap]m))?",
-            lowered,
-            re.IGNORECASE,
-        )
-        if en_match:
-            day = int(en_match.group(1))
-            month_name = en_match.group(2).lower()
-            year = int(en_match.group(3))
-            hour = int(en_match.group(4))
-            minute = int(en_match.group(5))
-            ampm = (en_match.group(6) or "").lower()
-
-            month = month_map_en.get(month_name)
-            if month:
-                if ampm == "pm" and hour < 12:
-                    hour += 12
-                if ampm == "am" and hour == 12:
-                    hour = 0
-                try:
-                    parsed = datetime.datetime(year, month, day, hour, minute)
-                    return parsed.strftime("%d/%m/%Y %H:%M")
-                except ValueError:
-                    pass
-
-        generic_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4}).*?(\d{1,2}):(\d{2})", lowered)
-        if generic_match:
-            day = int(generic_match.group(1))
-            month = int(generic_match.group(2))
-            year = int(generic_match.group(3))
-            hour = int(generic_match.group(4))
-            minute = int(generic_match.group(5))
-            try:
-                parsed = datetime.datetime(year, month, day, hour, minute)
-                return parsed.strftime("%d/%m/%Y %H:%M")
-            except ValueError:
-                pass
-
-        return None
+        return self.due_date_ai.normalize(raw_text)
 
     def _normalize_task_title(self, title: str):
         return " ".join((title or "").strip().lower().split())
