@@ -29,11 +29,12 @@ def _format_bytes(num_bytes: int | float | None):
     if num_bytes is None:
         return "No disponible"
 
-    size = float(num_bytes)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            return f"{size:.1f} {unit}"
-        size /= 1024
+    size_gb = float(num_bytes) / (1024 ** 3)
+    if size_gb >= 1:
+        return f"{size_gb:.1f} GB"
+
+    size_mb = float(num_bytes) / (1024 ** 2)
+    return f"{size_mb:.1f} MB"
 
 
 def _safe_percent(used: int | float, total: int | float):
