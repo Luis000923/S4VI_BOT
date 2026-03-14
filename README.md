@@ -44,4 +44,7 @@ CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
   - Lunes 06:00
   - Miércoles 18:00
   - Viernes 23:00
-- Comando manual: `/tareas nuevas`
+- Comando manual: `/tareas nuevas [semana]`
+  - Si se especifica `semana`, escanea esa semana exacta (ej. 8).
+  - Si no se especifica, escanea la semana más reciente disponible del curso.
+  - Prioriza semanas desde la 8 en adelante cuando existen.

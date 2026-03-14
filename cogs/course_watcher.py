@@ -32,6 +32,7 @@ SCHEDULE_SLOTS = {
 
 TIMEZONE_NAME = "America/El_Salvador"
 WEEK_REGEX = re.compile(r"semana\s*\d+", re.IGNORECASE)
+MIN_WEEK_TO_SCAN = 8
 
 
 class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="Escaneo de cursos virtuales"):
@@ -66,7 +67,12 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         await self.bot.wait_until_ready()
 
     @app_commands.command(name="nuevas", description="Forzar escaneo de cursos y detectar nuevos foros/tareas")
-    async def tareas_nuevas(self, interaction: discord.Interaction):
+    @app_commands.describe(semana="Número de semana a escanear (opcional)")
+    async def tareas_nuevas(
+        self,
+        interaction: discord.Interaction,
+        semana: app_commands.Range[int, 1, 60] | None = None,
+    ):
         await interaction.response.defer(ephemeral=True)
 
         new_items_total = 0
@@ -74,11 +80,15 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             if interaction.guild and guild.id != interaction.guild.id:
                 continue
 
-            created = await self._scan_and_notify(guild)
+            created = await self._scan_and_notify(guild, requested_week=semana)
             new_items_total += created
 
         if new_items_total == 0:
-            await interaction.followup.send("No se detectaron actividades nuevas (Foro/Tarea).", ephemeral=True)
+            week_text = f" en Semana {semana}" if semana is not None else ""
+            await interaction.followup.send(
+                f"No se detectaron actividades nuevas (Foro/Tarea){week_text}.",
+                ephemeral=True,
+            )
             return
 
         await interaction.followup.send(
@@ -86,19 +96,19 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             ephemeral=True,
         )
 
-    async def _scan_and_notify(self, guild: discord.Guild) -> int:
+    async def _scan_and_notify(self, guild: discord.Guild, requested_week: int | None = None) -> int:
         channel = self._resolve_updates_channel(guild)
         if not channel:
             return 0
 
-        new_items = await self._scan_courses_for_guild(guild.id)
+        new_items = await self._scan_courses_for_guild(guild.id, requested_week=requested_week)
         for item in new_items:
             embed = self._build_activity_embed(item)
             await channel.send(embed=embed)
 
         return len(new_items)
 
-    async def _scan_courses_for_guild(self, guild_id: int):
+    async def _scan_courses_for_guild(self, guild_id: int, requested_week: int | None = None):
         new_items = []
 
         timeout = aiohttp.ClientTimeout(total=30)
@@ -110,7 +120,27 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 if not html:
                     continue
 
-                items = self._extract_activities(course_name, course_url, html)
+                soup = BeautifulSoup(html, "html.parser")
+                target_week = self._resolve_target_week(soup, course_url, requested_week=requested_week)
+
+                target_url = course_url
+                target_week_name = None
+                target_html = html
+
+                if target_week:
+                    target_url = target_week["week_url"]
+                    target_week_name = target_week["week_name"]
+                    if target_url != course_url:
+                        section_html = await self._fetch_course_html(session, target_url)
+                        if section_html:
+                            target_html = section_html
+
+                items = self._extract_activities(
+                    course_name,
+                    target_url,
+                    target_html,
+                    forced_week_name=target_week_name,
+                )
                 for item in items:
                     item_hash = self._hash_item(item)
                     created = self.bot.db.add_course_watch_item(
@@ -190,10 +220,16 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             return token_input.get("value", "")
         return ""
 
-    def _extract_activities(self, course_name: str, course_url: str, html: str):
+    def _extract_activities(
+        self,
+        course_name: str,
+        course_url: str,
+        html: str,
+        forced_week_name: str | None = None,
+    ):
         soup = BeautifulSoup(html, "html.parser")
         extracted = []
-        global_week = self._extract_global_current_week(soup)
+        global_week = forced_week_name or self._extract_global_current_week(soup)
 
         sections = soup.select(
             "li.section.main, li[id^='section-'], li.course-section, section.course-section, "
@@ -202,7 +238,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         if sections:
             for section in sections:
-                week_name = self._extract_week_name(section)
+                week_name = forced_week_name or self._extract_week_name(section)
                 if week_name == "Semana no identificada" and global_week:
                     week_name = global_week
 
@@ -211,11 +247,86 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 for activity in activities:
                     item = self._parse_activity_block(activity, course_name, course_url, week_name, global_week)
                     if item:
+                        if forced_week_name:
+                            item["week_name"] = forced_week_name
                         extracted.append(item)
         else:
-            extracted.extend(self._extract_fallback_links(soup, course_name, course_url, global_week))
+            fallback_items = self._extract_fallback_links(soup, course_name, course_url, global_week)
+            if forced_week_name:
+                for item in fallback_items:
+                    item["week_name"] = forced_week_name
+            extracted.extend(fallback_items)
 
         return extracted
+
+    def _resolve_target_week(self, soup: BeautifulSoup, course_url: str, requested_week: int | None = None):
+        available_weeks = self._extract_available_weeks(soup, course_url)
+
+        if requested_week is not None:
+            selected = available_weeks.get(requested_week)
+            if selected:
+                return selected
+            return {
+                "week_number": requested_week,
+                "week_name": f"Semana {requested_week}",
+                "week_url": self._build_section_url(course_url, requested_week),
+            }
+
+        week_numbers = sorted(available_weeks.keys())
+        if not week_numbers:
+            return None
+
+        filtered = [num for num in week_numbers if num >= MIN_WEEK_TO_SCAN]
+        chosen_number = filtered[-1] if filtered else week_numbers[-1]
+        return available_weeks[chosen_number]
+
+    def _extract_available_weeks(self, soup: BeautifulSoup, course_url: str):
+        weeks = {}
+
+        for anchor in soup.select("a[href*='section='], a.nav-link[data-key]"):
+            text = anchor.get_text(" ", strip=True)
+            week_number = self._extract_week_number(text)
+            if week_number is None:
+                continue
+
+            href = anchor.get("href", "")
+            week_url = urljoin(course_url, href) if href else self._build_section_url(course_url, week_number)
+            weeks[week_number] = {
+                "week_number": week_number,
+                "week_name": f"Semana {week_number}",
+                "week_url": week_url,
+            }
+
+        for section in soup.select("li[id^='section-'], section[id^='section-']"):
+            section_id = section.get("id", "")
+            match = re.search(r"section-(\d+)", section_id, re.IGNORECASE)
+            if not match:
+                continue
+
+            week_number = int(match.group(1))
+            if week_number not in weeks:
+                weeks[week_number] = {
+                    "week_number": week_number,
+                    "week_name": f"Semana {week_number}",
+                    "week_url": self._build_section_url(course_url, week_number),
+                }
+
+        return weeks
+
+    def _extract_week_number(self, text: str):
+        match = WEEK_REGEX.search(text or "")
+        if not match:
+            return None
+
+        number_match = re.search(r"\d+", match.group(0))
+        if not number_match:
+            return None
+
+        return int(number_match.group(0))
+
+    def _build_section_url(self, course_url: str, week_number: int):
+        separator = "&" if "?" in course_url else "?"
+        return f"{course_url}{separator}section={week_number}"
 
     def _extract_global_current_week(self, soup: BeautifulSoup):
         selectors = [
