@@ -9,6 +9,11 @@ import shutil
 import time
 
 try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
+
+try:
     import psutil
 except Exception:
     psutil = None
@@ -23,15 +28,12 @@ _last_cleanup_ts = 0.0
 _last_cleanup_summary = {"archivos_eliminados": 0, "carpetas_eliminadas": 0}
 _last_metrics_ts = 0.0
 _last_metrics = None
+EL_SALVADOR_TZ = ZoneInfo("America/El_Salvador") if ZoneInfo is not None else datetime.timezone(datetime.timedelta(hours=-6))
 
 
 def _format_bytes(num_bytes: int | float | None):
     if num_bytes is None:
         return "No disponible"
-
-    size_gb = float(num_bytes) / (1024 ** 3)
-    if size_gb >= 1:
-        return f"{size_gb:.1f} GB"
 
     size_mb = float(num_bytes) / (1024 ** 2)
     return f"{size_mb:.1f} MB"
@@ -222,11 +224,10 @@ def _collect_metrics():
 
 
 def _get_timestamp_fields():
-    now_utc = datetime.datetime.utcnow()
-    now_local = datetime.datetime.now().astimezone()
+    now_sv = datetime.datetime.now(EL_SALVADOR_TZ)
     return {
-        "actualizado_en": now_utc.isoformat(timespec="seconds") + "Z",
-        "actualizado_en_12h": now_local.strftime("%Y-%m-%d %I:%M:%S %p"),
+        "actualizado_en": now_sv.isoformat(timespec="seconds"),
+        "actualizado_en_12h": now_sv.strftime("%Y-%m-%d %I:%M:%S %p"),
     }
 
 @app.route('/')
