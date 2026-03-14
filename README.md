@@ -7,6 +7,8 @@ EJEMPLO DE .env
 DISCORD_TOKEN=TOKEN_DEL_BOT
 #id del grupo
 GUILD_ID=ID_DEL_SERVIDOR
+#cookie opcional para cursos privados (Moodle)
+#CVIRTUAL_COOKIE=MoodleSession=...; other_cookie=...
 
 ### CAMBIAR LA MENCION DE LOS DEL GRUPO CON everyone
 
@@ -17,6 +19,7 @@ GUILD_ID=ID_DEL_SERVIDOR
   - `help.py`
   - `reminders.py`
   - `tasks.py`
+  - `course_watcher.py`
 - **database/**: Gestión de datos.
   - `db_handler.py`
   - `bot.db`
@@ -28,3 +31,14 @@ GUILD_ID=ID_DEL_SERVIDOR
 - `.env`: Variables de entorno.
 - `requirements.txt`: Dependencias del proyecto.
 - `estructura-discord.md`: Guía de la estructura del servidor.
+
+## MONITOREO DE CURSOS (NUEVO)
+- El cog `course_watcher.py` revisa cursos de CVIRTUAL y detecta actividades de tipo **Foro** y **Tarea**.
+- Extrae curso, semana, tipo, título y enlace.
+- Guarda un hash en SQLite para no repetir notificaciones.
+- Publica novedades en el canal de avisos de tareas.
+- Horarios automáticos (`America/El_Salvador`):
+  - Lunes 06:00
+  - Miércoles 18:00
+  - Viernes 23:00
+- Comando manual: `/tareas nuevas`

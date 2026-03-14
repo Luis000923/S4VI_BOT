@@ -71,6 +71,20 @@ class DatabaseHandler:
                 )
             ''')
 
+            # Registro de actividades detectadas en cursos virtuales (evita duplicados por hash)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS course_watch_items (
+                    item_hash TEXT PRIMARY KEY,
+                    course_name TEXT NOT NULL,
+                    week_name TEXT NOT NULL,
+                    activity_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    first_seen TEXT NOT NULL
+                )
+            ''')
+
             # Migración: Agregar columna reminders_active si no existe
             try:
                 cursor.execute('ALTER TABLE tasks ADD COLUMN reminders_active INTEGER DEFAULT 1')
@@ -218,3 +232,19 @@ class DatabaseHandler:
             cursor = conn.cursor()
             cursor.execute('INSERT INTO sent_reminders (task_id, reminder_type) VALUES (?, ?)', (task_id, reminder_type))
             conn.commit()
+
+    # Guardar actividad detectada por el monitor de cursos (si no existe previamente)
+    def add_course_watch_item(self, item_hash, course_name, week_name, activity_type, title, url, guild_id):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            first_seen = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO course_watch_items
+                (item_hash, course_name, week_name, activity_type, title, url, guild_id, first_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (item_hash, course_name, week_name, activity_type, title, url, guild_id, first_seen)
+            )
+            conn.commit()
+            return cursor.rowcount > 0

@@ -72,6 +72,7 @@ CHANNELS = {
     "PENDING": "📄-tareas-pendientes",
     "DELIVERED": "📄-tareas-entregadas",
     "DATES": "fechas-de-entrega",
+    "COURSE_UPDATES": "avisos-tareas-pendientes",
     "SUBJECT_PREFIX": "📄-tareas-" 
 }
 
