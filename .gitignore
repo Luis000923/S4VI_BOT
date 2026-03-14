@@ -9,6 +9,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Logs y temporales locales
+*.log
+*.tmp
+*.bak
+tmp/
+temp/
+logs/
+
 # IDEs
 .vscode/
 .idea/

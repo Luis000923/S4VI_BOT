@@ -2,15 +2,59 @@
 from flask import Flask, jsonify
 from threading import Thread
 import ctypes
+import datetime
 import os
+from pathlib import Path
 import shutil
-import subprocess
+import time
 
-# Aplicación Flask para el monitoreo
+try:
+    import psutil
+except Exception:
+    psutil = None
+
 app = Flask('')
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+METRICS_CACHE_TTL_SECONDS = 5
 
-def _get_ram_usage_percent():
+_last_cleanup_ts = 0.0
+_last_cleanup_summary = {"archivos_eliminados": 0, "carpetas_eliminadas": 0}
+_last_metrics_ts = 0.0
+_last_metrics = None
+
+
+def _format_bytes(num_bytes: int | float | None):
+    if num_bytes is None:
+        return "No disponible"
+
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+
+
+def _safe_percent(used: int | float, total: int | float):
+    if not total:
+        return "No disponible"
+    return f"{(used / total) * 100:.1f}%"
+
+
+def _get_ram_metrics():
+    if psutil is not None:
+        try:
+            mem = psutil.virtual_memory()
+            return {
+                "usada": _format_bytes(mem.used),
+                "total": _format_bytes(mem.total),
+                "libre": _format_bytes(mem.available),
+                "porcentaje_usado": f"{mem.percent:.1f}%",
+            }
+        except Exception:
+            pass
+
     try:
         if hasattr(ctypes, "windll"):
             class MEMORYSTATUSEX(ctypes.Structure):
@@ -29,97 +73,168 @@ def _get_ram_usage_percent():
             memory_status = MEMORYSTATUSEX()
             memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
             ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status))
-            return int(memory_status.dwMemoryLoad)
+            used = memory_status.ullTotalPhys - memory_status.ullAvailPhys
+            total = memory_status.ullTotalPhys
+            free = memory_status.ullAvailPhys
+            return {
+                "usada": _format_bytes(used),
+                "total": _format_bytes(total),
+                "libre": _format_bytes(free),
+                "porcentaje_usado": _safe_percent(used, total),
+            }
     except Exception:
         pass
 
     try:
         if os.path.exists("/proc/meminfo"):
+            meminfo = {}
             with open("/proc/meminfo", "r", encoding="utf-8") as file:
-                meminfo = file.read()
+                for line in file:
+                    if ":" not in line:
+                        continue
+                    key, value = line.split(":", 1)
+                    meminfo[key.strip()] = int(value.strip().split()[0])
 
-            total_match = None
-            available_match = None
-            for line in meminfo.splitlines():
-                if line.startswith("MemTotal:"):
-                    total_match = int(line.split()[1])
-                elif line.startswith("MemAvailable:"):
-                    available_match = int(line.split()[1])
-
-            if total_match and available_match is not None and total_match > 0:
-                used = total_match - available_match
-                return round((used / total_match) * 100, 1)
+            total_kb = meminfo.get("MemTotal")
+            available_kb = meminfo.get("MemAvailable")
+            if total_kb and available_kb is not None:
+                used_kb = total_kb - available_kb
+                return {
+                    "usada": _format_bytes(used_kb * 1024),
+                    "total": _format_bytes(total_kb * 1024),
+                    "libre": _format_bytes(available_kb * 1024),
+                    "porcentaje_usado": _safe_percent(used_kb, total_kb),
+                }
     except Exception:
         pass
 
-    return None
+    return {
+        "usada": "No disponible",
+        "total": "No disponible",
+        "libre": "No disponible",
+        "porcentaje_usado": "No disponible",
+    }
 
 
-def _get_storage_usage_percent(path: str = "."):
+def _get_storage_metrics(path: str = "."):
     try:
-        total, used, _ = shutil.disk_usage(path)
-        if total <= 0:
-            return None
-        return round((used / total) * 100, 1)
+        usage = shutil.disk_usage(path)
+        return {
+            "usado": _format_bytes(usage.used),
+            "total": _format_bytes(usage.total),
+            "libre": _format_bytes(usage.free),
+            "porcentaje_usado": _safe_percent(usage.used, usage.total),
+        }
     except Exception:
-        return None
+        return {
+            "usado": "No disponible",
+            "total": "No disponible",
+            "libre": "No disponible",
+            "porcentaje_usado": "No disponible",
+        }
 
 
-def _get_gpu_usage_percent():
+def _get_cpu_metrics():
+    cpu_percent = None
+    if psutil is not None:
+        try:
+            cpu_percent = psutil.cpu_percent(interval=0.2)
+        except Exception:
+            cpu_percent = None
+
+    load_text = "No disponible"
     try:
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=utilization.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return "No disponible"
+        if hasattr(os, "getloadavg"):
+            load_1m, load_5m, load_15m = os.getloadavg()
+            load_text = f"1m={load_1m:.2f}, 5m={load_5m:.2f}, 15m={load_15m:.2f}"
+    except Exception:
+        pass
 
-        values = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
+    if cpu_percent is None:
+        cpu_usage = "No disponible"
+    else:
+        cpu_usage = f"{cpu_percent:.1f}%"
+
+    return {
+        "uso": cpu_usage,
+        "carga": load_text,
+    }
+
+
+def _cleanup_transient_files():
+    deleted_files = 0
+    deleted_dirs = 0
+
+    ignore_roots = {".git", ".venv"}
+
+    for pycache_dir in PROJECT_ROOT.rglob("__pycache__"):
+        if any(part in ignore_roots for part in pycache_dir.parts):
+            continue
+        try:
+            shutil.rmtree(pycache_dir)
+            deleted_dirs += 1
+        except Exception:
+            pass
+
+    for ext in ("*.pyc", "*.pyo"):
+        for file_path in PROJECT_ROOT.rglob(ext):
+            if any(part in ignore_roots for part in file_path.parts):
                 continue
             try:
-                values.append(float(line))
-            except ValueError:
-                continue
+                file_path.unlink(missing_ok=True)
+                deleted_files += 1
+            except Exception:
+                pass
 
-        if not values:
-            return "No disponible"
+    return {
+        "archivos_eliminados": deleted_files,
+        "carpetas_eliminadas": deleted_dirs,
+    }
 
-        return f"{round(sum(values) / len(values), 1)}%"
-    except Exception:
-        return "No disponible"
+
+def _run_periodic_maintenance():
+    global _last_cleanup_ts, _last_cleanup_summary
+
+    now = time.time()
+    if (now - _last_cleanup_ts) < CLEANUP_INTERVAL_SECONDS:
+        return
+
+    # Mantenimiento seguro: solo elimina artefactos temporales de Python.
+    _last_cleanup_summary = _cleanup_transient_files()
+    _last_cleanup_ts = now
+
+
+def _collect_metrics():
+    global _last_metrics_ts, _last_metrics
+
+    now = time.time()
+    if _last_metrics is not None and (now - _last_metrics_ts) < METRICS_CACHE_TTL_SECONDS:
+        return _last_metrics
+
+    _last_metrics = {
+        "cpu": _get_cpu_metrics(),
+        "ram": _get_ram_metrics(),
+        "almacenamiento": _get_storage_metrics("."),
+    }
+    _last_metrics_ts = now
+    return _last_metrics
 
 @app.route('/')
 def home():
-    ram = _get_ram_usage_percent()
-    storage = _get_storage_usage_percent(".")
-    gpu = _get_gpu_usage_percent()
+    _run_periodic_maintenance()
+    metrics = _collect_metrics()
 
     return jsonify(
         {
             "estado": "El bot está en línea",
-            "metricas": {
-                "ram": f"{ram}%" if ram is not None else "No disponible",
-                "gpu": gpu,
-                "almacenamiento": f"{storage}%" if storage is not None else "No disponible",
-            },
+            "actualizado_en": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "metricas": metrics,
         }
     )
 
 def run():
-    # Ejecutar el servidor web en el puerto 8080 o en el host especificado
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
 
-# Inicializar un hilo separado para ejecutar el servidor web
 def keep_alive():
-    t = Thread(target=run)
+    t = Thread(target=run, daemon=True)
     t.start()

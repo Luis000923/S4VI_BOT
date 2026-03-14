@@ -27,3 +27,5 @@ Esta carpeta contiene un archivo por comando del bot, explicando:
 - `/tareas nuevas` puede auto-programar tareas detectadas por CVirtual con fecha de entrega/cierre y link fuente.
 - `/tareas nuevas` actualiza tareas existentes cuando CVirtual cambia la información.
 - El control de duplicados de tareas detectadas prioriza coincidencia por `source_url`.
+- `keep_alive.py` ahora reporta `cpu`, `ram` y `almacenamiento` con detalle (`usado/total/libre/porcentaje`) y elimina GPU.
+- Se añadió mantenimiento seguro para limpieza de `__pycache__` y archivos compilados temporales de Python.

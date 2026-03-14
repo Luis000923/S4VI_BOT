@@ -2,11 +2,21 @@ El bot corre en render y se mantiene activo gracias a una petición al sitio web
 https://s4vi-bot.onrender.com que le llega cada 5 minutos con por parte de uptime robot
 tiene que crear un .env con el token del bot.
 
-La ruta principal `/` del `keep_alive.py` ahora devuelve un estado minimalista en JSON:
+La ruta principal `/` del `keep_alive.py` devuelve estado y métricas reales en JSON:
 - `estado`: confirma que el bot está en línea.
-- `metricas.ram`: uso de RAM.
-- `metricas.gpu`: uso de GPU (si no está disponible en el host, responde `No disponible`).
-- `metricas.almacenamiento`: uso de almacenamiento del disco.
+- `actualizado_en`: timestamp UTC del muestreo.
+- `metricas.cpu`:
+  - `uso`: porcentaje de CPU.
+  - `carga`: promedio de carga (1m/5m/15m) cuando el host lo soporta.
+- `metricas.ram`:
+  - `usada`, `total`, `libre`, `porcentaje_usado`.
+- `metricas.almacenamiento`:
+  - `usado`, `total`, `libre`, `porcentaje_usado`.
+
+Notas de optimización del endpoint:
+- Se removió por completo la métrica de GPU.
+- Se usa caché corta de métricas para reducir lecturas frecuentes de sistema.
+- Se ejecuta limpieza segura periódica de artefactos temporales de Python (`__pycache__`, `*.pyc`, `*.pyo`) fuera de `.venv` y `.git`.
 
 EJEMPLO DE .env
 #api del bot del discord
