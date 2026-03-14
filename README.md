@@ -7,6 +7,9 @@ EJEMPLO DE .env
 DISCORD_TOKEN=TOKEN_DEL_BOT
 #id del grupo
 GUILD_ID=ID_DEL_SERVIDOR
+#usuario y contraseña para acceder a CVIRTUAL
+CVIRTUAL_USER=USUARIO_CVIRTUAL
+CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
 #cookie opcional para cursos privados (Moodle)
 #CVIRTUAL_COOKIE=MoodleSession=...; other_cookie=...
 

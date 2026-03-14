@@ -21,6 +21,9 @@ COURSES = {
     "SEGURIDAD DE LA INFORMACION": "https://www.cvirtualuees.edu.sv/course/view.php?id=23877",
 }
 
+MOODLE_BASE_URL = "https://www.cvirtualuees.edu.sv"
+MOODLE_LOGIN_URL = f"{MOODLE_BASE_URL}/login/index.php"
+
 SCHEDULE_SLOTS = {
     (0, 6, 0),   # Lunes 06:00
     (2, 18, 0),  # Miércoles 18:00
@@ -100,6 +103,8 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
+            await self._authenticate_session(session)
+
             for course_name, course_url in COURSES.items():
                 html = await self._fetch_course_html(session, course_url)
                 if not html:
@@ -122,12 +127,47 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         return new_items
 
+    async def _authenticate_session(self, session: aiohttp.ClientSession):
+        username = os.getenv("CVIRTUAL_USER", "").strip()
+        password = os.getenv("CVIRTUAL_PASSWORD", "").strip()
+
+        if not username or not password:
+            return False
+
+        try:
+            request_kwargs = self._cookie_request_kwargs()
+            async with session.get(MOODLE_LOGIN_URL, **request_kwargs) as response:
+                if response.status != 200:
+                    return False
+                login_html = await response.text()
+
+            token = self._extract_login_token(login_html)
+            payload = {
+                "username": username,
+                "password": password,
+            }
+            if token:
+                payload["logintoken"] = token
+
+            post_kwargs = self._cookie_request_kwargs()
+            post_kwargs["data"] = payload
+
+            async with session.post(MOODLE_LOGIN_URL, **post_kwargs) as response:
+                final_url = str(response.url)
+                html = await response.text()
+
+            if "login/index.php" in final_url and "invalidlogin" in html.lower():
+                print("CourseWatcher: credenciales Moodle inválidas.")
+                return False
+
+            return True
+        except Exception as error:
+            print(f"CourseWatcher: error autenticando en Moodle: {error}")
+            return False
+
     async def _fetch_course_html(self, session: aiohttp.ClientSession, url: str) -> str:
         try:
-            request_kwargs = {}
-            cookie_header = os.getenv("CVIRTUAL_COOKIE", "").strip()
-            if cookie_header:
-                request_kwargs["headers"] = {"Cookie": cookie_header}
+            request_kwargs = self._cookie_request_kwargs()
 
             async with session.get(url, **request_kwargs) as response:
                 if response.status != 200:
@@ -135,6 +175,20 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 return await response.text()
         except Exception:
             return ""
+
+    def _cookie_request_kwargs(self):
+        request_kwargs = {}
+        cookie_header = os.getenv("CVIRTUAL_COOKIE", "").strip()
+        if cookie_header:
+            request_kwargs["headers"] = {"Cookie": cookie_header}
+        return request_kwargs
+
+    def _extract_login_token(self, html: str):
+        soup = BeautifulSoup(html, "html.parser")
+        token_input = soup.select_one("input[name='logintoken']")
+        if token_input:
+            return token_input.get("value", "")
+        return ""
 
     def _extract_activities(self, course_name: str, course_url: str, html: str):
         soup = BeautifulSoup(html, "html.parser")
