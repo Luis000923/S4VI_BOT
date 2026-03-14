@@ -25,3 +25,5 @@ Esta carpeta contiene un archivo por comando del bot, explicando:
 ## Notas recientes
 - `/crear-tarea` y `/editar-tarea` aceptan títulos largos; el recorte se aplica solo en visualización cuando es necesario.
 - `/tareas nuevas` puede auto-programar tareas detectadas por CVirtual con fecha de entrega/cierre y link fuente.
+- `/tareas nuevas` actualiza tareas existentes cuando CVirtual cambia la información.
+- El control de duplicados de tareas detectadas prioriza coincidencia por `source_url`.

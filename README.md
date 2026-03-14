@@ -42,6 +42,8 @@ CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
 - Publica novedades en el canal de avisos de tareas.
 - Si detecta una **TAREA** nueva, la programa automáticamente en el canal de materia correspondiente.
 - Si la tarea ya existe, no la duplica y solo la reporta al usuario que ejecutó el comando.
+- Si la información cambia en CVIRTUAL (fecha, título o materia), actualiza la tarea existente y sus mensajes en Discord.
+- La no-duplicación se refuerza con `source_url` de la tarea, además de validación por materia+título.
 - Los títulos largos de tareas se aceptan; el sistema recorta solo para visualización cuando aplica.
 - Las tareas auto-programadas incluyen el link de origen de CVIRTUAL en el embed.
 - Las tareas auto-programadas incluyen también las indicaciones extraídas desde la página de la tarea.

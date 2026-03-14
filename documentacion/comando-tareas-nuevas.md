@@ -33,8 +33,10 @@ Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y 
 6. Incluye el link de origen de CVirtual en el embed de la tarea programada.
 7. Extrae también las indicaciones desde la vista de la tarea (bloque de introducción/descripcion) y las incluye en el embed.
 8. Si la tarea ya estaba asignada, no la duplica y solo la reporta al usuario que ejecutó el comando.
-9. Si el título es muy largo, lo recorta solo para visualización y conserva el original en DB.
-10. Responde con resumen de actividades nuevas, tareas programadas y tareas ya asignadas.
+9. Si CVIRTUAL actualiza datos de una tarea existente (fecha/título/materia), el bot actualiza esa tarea y edita sus mensajes publicados.
+10. Para evitar duplicados, prioriza coincidencia por `source_url` de la tarea y usa materia+título como respaldo.
+11. Si el título es muy largo, lo recorta solo para visualización y conserva el original en DB.
+12. Responde con resumen de actividades nuevas, tareas programadas, tareas actualizadas y tareas ya asignadas.
 
 ## Funciones relacionadas
 - `_resolve_target_week(...)`
@@ -48,4 +50,4 @@ Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y 
 - Estructura HTML variable de Moodle (mitigada con selectores de fallback).
 
 ## Resultado esperado
-Publicación de nuevas actividades, programación automática de tareas por materia y control de duplicados.
+Publicación de nuevas actividades, programación automática de tareas por materia, actualización de tareas existentes y control de duplicados.
