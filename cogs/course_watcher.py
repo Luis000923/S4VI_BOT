@@ -139,22 +139,48 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
     def _extract_activities(self, course_name: str, course_url: str, html: str):
         soup = BeautifulSoup(html, "html.parser")
         extracted = []
+        global_week = self._extract_global_current_week(soup)
 
-        sections = soup.select("li.section.main, li[id^='section-'], section.course-section")
+        sections = soup.select(
+            "li.section.main, li[id^='section-'], li.course-section, section.course-section, "
+            "section[id*='section'], div.section, div[data-for='section']"
+        )
 
         if sections:
             for section in sections:
                 week_name = self._extract_week_name(section)
-                activities = section.select("li.activity, div.activity")
+                if week_name == "Semana no identificada" and global_week:
+                    week_name = global_week
+
+                activities = section.select("li.activity, div.activity, a[href*='/mod/forum/'], a[href*='/mod/assign/']")
 
                 for activity in activities:
-                    item = self._parse_activity_block(activity, course_name, course_url, week_name)
+                    item = self._parse_activity_block(activity, course_name, course_url, week_name, global_week)
                     if item:
                         extracted.append(item)
         else:
-            extracted.extend(self._extract_fallback_links(soup, course_name, course_url))
+            extracted.extend(self._extract_fallback_links(soup, course_name, course_url, global_week))
 
         return extracted
+
+    def _extract_global_current_week(self, soup: BeautifulSoup):
+        selectors = [
+            ".nav-link.active",
+            ".active[aria-selected='true']",
+            "[aria-current='page']",
+            ".courseindex-item.active",
+            ".tab.active",
+            ".week-navigation .active",
+        ]
+
+        for selector in selectors:
+            for node in soup.select(selector):
+                text = node.get_text(" ", strip=True)
+                match = WEEK_REGEX.search(text)
+                if match:
+                    return match.group(0).title()
+
+        return None
 
     def _extract_week_name(self, section) -> str:
         candidates = section.select(".sectionname, h3.sectionname, h4.sectionname, .section-title")
@@ -171,7 +197,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         return "Semana no identificada"
 
-    def _parse_activity_block(self, activity, course_name: str, course_url: str, week_name: str):
+    def _parse_activity_block(self, activity, course_name: str, course_url: str, week_name: str, global_week: str = None):
         classes = " ".join(activity.get("class", [])).lower()
         text = activity.get_text(" ", strip=True)
 
@@ -179,7 +205,11 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         if not activity_type:
             return None
 
-        anchor = activity.select_one("a.aalink, a.activityinstance, a[href*='/mod/']")
+        if getattr(activity, "name", "") == "a":
+            anchor = activity
+        else:
+            anchor = activity.select_one("a.aalink, a.activityinstance, a[href*='/mod/']")
+
         if not anchor:
             return None
 
@@ -191,15 +221,19 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         if not title:
             title = text[:180]
 
+        resolved_week = week_name
+        if resolved_week == "Semana no identificada":
+            resolved_week = self._infer_week_from_context(anchor, global_week)
+
         return {
             "course_name": course_name,
-            "week_name": week_name,
+            "week_name": resolved_week,
             "activity_type": activity_type,
             "title": title,
             "url": urljoin(course_url, href),
         }
 
-    def _extract_fallback_links(self, soup: BeautifulSoup, course_name: str, course_url: str):
+    def _extract_fallback_links(self, soup: BeautifulSoup, course_name: str, course_url: str, global_week: str = None):
         items = []
         links = soup.select("a[href*='/mod/forum/'], a[href*='/mod/assign/']")
 
@@ -223,6 +257,8 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
             section = anchor.find_parent(["li", "section", "div"])
             week_name = self._extract_week_name(section) if section else "Semana no identificada"
+            if week_name == "Semana no identificada":
+                week_name = self._infer_week_from_context(anchor, global_week)
 
             items.append(
                 {
@@ -235,6 +271,32 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             )
 
         return items
+
+    def _infer_week_from_context(self, node, default_week: str = None):
+        current = node
+        depth = 0
+        while current is not None and depth < 7:
+            text = current.get_text(" ", strip=True)
+            match = WEEK_REGEX.search(text)
+            if match:
+                return match.group(0).title()
+            current = current.parent
+            depth += 1
+
+        sibling = getattr(node, "previous_sibling", None)
+        checks = 0
+        while sibling is not None and checks < 8:
+            try:
+                text = sibling.get_text(" ", strip=True)
+            except Exception:
+                text = str(sibling)
+            match = WEEK_REGEX.search(text)
+            if match:
+                return match.group(0).title()
+            sibling = getattr(sibling, "previous_sibling", None)
+            checks += 1
+
+        return default_week or "Semana no identificada"
 
     def _detect_activity_type(self, classes_text: str, visible_text: str):
         normalized = f"{classes_text} {visible_text}".lower()
