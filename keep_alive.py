@@ -220,15 +220,26 @@ def _collect_metrics():
     _last_metrics_ts = now
     return _last_metrics
 
+
+def _get_timestamp_fields():
+    now_utc = datetime.datetime.utcnow()
+    now_local = datetime.datetime.now().astimezone()
+    return {
+        "actualizado_en": now_utc.isoformat(timespec="seconds") + "Z",
+        "actualizado_en_12h": now_local.strftime("%Y-%m-%d %I:%M:%S %p"),
+    }
+
 @app.route('/')
 def home():
     _run_periodic_maintenance()
     metrics = _collect_metrics()
+    timestamps = _get_timestamp_fields()
 
     return jsonify(
         {
             "estado": "El bot está en línea",
-            "actualizado_en": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "actualizado_en": timestamps["actualizado_en"],
+            "actualizado_en_12h": timestamps["actualizado_en_12h"],
             "metricas": metrics,
         }
     )

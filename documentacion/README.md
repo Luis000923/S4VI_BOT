@@ -29,3 +29,4 @@ Esta carpeta contiene un archivo por comando del bot, explicando:
 - El control de duplicados de tareas detectadas prioriza coincidencia por `source_url`.
 - `keep_alive.py` ahora reporta `cpu`, `ram` y `almacenamiento` con detalle (`usado/total/libre/porcentaje`) y elimina GPU.
 - Se añadió mantenimiento seguro para limpieza de `__pycache__` y archivos compilados temporales de Python.
+- El endpoint `/` también incluye `actualizado_en_12h` con hora local en formato 12 horas (AM/PM).

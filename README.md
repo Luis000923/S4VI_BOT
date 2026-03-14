@@ -5,6 +5,7 @@ tiene que crear un .env con el token del bot.
 La ruta principal `/` del `keep_alive.py` devuelve estado y métricas reales en JSON:
 - `estado`: confirma que el bot está en línea.
 - `actualizado_en`: timestamp UTC del muestreo.
+- `actualizado_en_12h`: hora local legible en formato 12h con AM/PM.
 - `metricas.cpu`:
   - `uso`: porcentaje de CPU.
   - `carga`: promedio de carga (1m/5m/15m) cuando el host lo soporta.
