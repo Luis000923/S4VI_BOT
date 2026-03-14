@@ -1,9 +1,17 @@
 # reminders.py - Recordatorios automáticos de tareas
 import discord
 from discord.ext import tasks, commands
-from utils.config import CHANNELS, SUBJECTS, find_channel
+from utils.config import find_channel
 from utils.embeds import create_reminder_embed
 import datetime
+
+
+REMINDER_CHECKS = (
+    (24, "24h"),
+    (6, "6h"),
+    (1, "1h"),
+    (0, "final"),
+)
 
 class Reminders(commands.Cog):
     def __init__(self, bot):
@@ -18,7 +26,15 @@ class Reminders(commands.Cog):
     async def check_reminders(self):
         for guild in self.bot.guilds:
             tasks_list = self.bot.db.get_tasks(guild.id)
+            if not tasks_list:
+                continue
+
             now = datetime.datetime.now()
+            task_ids = [task[0] for task in tasks_list]
+            sent_reminders = self.bot.db.get_sent_reminders_for_tasks(task_ids)
+            enrollment_snapshot = self.bot.db.get_enrollment_snapshot(guild.id)
+            delivered_pairs = self.bot.db.get_delivered_pairs_for_tasks(guild.id, task_ids)
+            channel_cache = {}
 
             for task in tasks_list:
                 tid, subject, title, due_date_str = task[0], task[1], task[2], task[3]
@@ -40,27 +56,34 @@ class Reminders(commands.Cog):
                 if hours_left < -0.5:
                     continue
 
-                # Umbrales de recordatorio (horas restantes antes del vencimiento)
-                reminder_checks = [
-                    (24, "24h"),
-                    (6, "6h"),
-                    (1, "1h"),
-                    (0, "final")
-                ]
-
-                for trigger_hours, r_type in reminder_checks:
+                for trigger_hours, r_type in REMINDER_CHECKS:
                     # Enviar recordatorio si está dentro del umbral y no se ha enviado previamente
-                    if 0 <= hours_left <= trigger_hours and not self.bot.db.is_reminder_sent(tid, r_type):
-                        await self.send_reminder(guild, task, r_type, hours_left)
+                    if 0 <= hours_left <= trigger_hours and (tid, r_type) not in sent_reminders:
+                        await self.send_reminder(
+                            guild,
+                            task,
+                            r_type,
+                            hours_left,
+                            enrollment_snapshot=enrollment_snapshot,
+                            delivered_pairs=delivered_pairs,
+                            channel_cache=channel_cache,
+                        )
                         self.bot.db.mark_reminder_sent(tid, r_type)
+                        sent_reminders.add((tid, r_type))
                         break 
 
     # Enviar notificación de recordatorio al canal de la materia
-    async def send_reminder(self, guild, task, r_type, hours_left):
+    async def send_reminder(self, guild, task, r_type, hours_left, enrollment_snapshot=None, delivered_pairs=None, channel_cache=None):
         tid, subject, title, due_date_str = task[0], task[1], task[2], task[3]
         
         # Localizar el canal designado para la materia
-        channel = find_channel(guild, subject)
+        if channel_cache is None:
+            channel = find_channel(guild, subject)
+        else:
+            channel = channel_cache.get(subject)
+            if subject not in channel_cache:
+                channel = find_channel(guild, subject)
+                channel_cache[subject] = channel
         
         if not channel:
             print(f"Advertencia: No se encontró el canal para el recordatorio de: {subject}")
@@ -86,14 +109,32 @@ class Reminders(commands.Cog):
             time_text = f"{int(hours_left)} horas"
 
         embed = create_reminder_embed(title, subject, time_text)
+
+        users_with_enrollments = set()
+        subjects_by_user = {}
+        if enrollment_snapshot:
+            users_with_enrollments = enrollment_snapshot.get("users_with_enrollments", set())
+            subjects_by_user = enrollment_snapshot.get("subjects_by_user", {})
+        delivered_lookup = delivered_pairs if delivered_pairs is not None else set()
         
         # Filtrar usuarios inscritos en la materia que aún no han entregado
         enrolled_users = []
         for member in guild.members:
-            if member.bot: continue
-            
-            is_enrolled = self.bot.db.is_user_enrolled_in_subject(member.id, subject, guild.id)
-            has_delivered = self.bot.db.is_delivered(tid, member.id)
+            if member.bot:
+                continue
+
+            if enrollment_snapshot is None:
+                is_enrolled = self.bot.db.is_user_enrolled_in_subject(member.id, subject, guild.id)
+            else:
+                if member.id in users_with_enrollments:
+                    is_enrolled = subject in subjects_by_user.get(member.id, set())
+                else:
+                    is_enrolled = True
+
+            if delivered_pairs is None:
+                has_delivered = self.bot.db.is_delivered(tid, member.id)
+            else:
+                has_delivered = (tid, member.id) in delivered_lookup
             
             if is_enrolled and not has_delivered:
                 enrolled_users.append(member.mention)

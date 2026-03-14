@@ -4,7 +4,6 @@ from discord import app_commands
 from discord.ext import commands
 from utils.config import SUBJECTS, CHANNELS
 from utils.embeds import create_success_embed, create_error_embed
-import datetime
 
 class Deliveries(commands.Cog):
     def __init__(self, bot):

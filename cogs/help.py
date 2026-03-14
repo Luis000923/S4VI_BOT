@@ -3,7 +3,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.config import ROLES, CHANNELS
-from utils.embeds import create_success_embed
 
 class Help(commands.Cog):
     def __init__(self, bot):

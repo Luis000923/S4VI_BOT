@@ -1,6 +1,6 @@
 # embeds.py - Embeds de gestión de tareas
 import discord
-from .config import *
+from .config import COLOR_DANGER, COLOR_PENDING, COLOR_REMINDER, COLOR_SUCCESS
 
 
 def _clip(text, limit):

@@ -2,9 +2,9 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from utils.config import SUBJECTS, CHANNELS, ROLES, find_channel, SUBJECTS_MAP
+from utils.config import SUBJECTS, ROLES, find_channel, SUBJECTS_MAP
 from utils.date_ai import DueDateAI
-from utils.embeds import create_task_embed, create_success_embed, create_error_embed
+from utils.embeds import create_task_embed, create_success_embed
 import datetime
 
 class Tasks(commands.Cog):
@@ -260,9 +260,40 @@ class Tasks(commands.Cog):
         materia="Filtrar por materia",
         tarea="Seleccionar la tarea específica"
     )
-    async def tarea_eliminar(self, interaction: discord.Interaction, materia: str, tarea: str):
+    async def tarea_eliminar(self, interaction: discord.Interaction, materia: str, tarea: str = None):
         if not await self.check_permissions(interaction):
             await interaction.response.send_message("Permisos insuficientes.", ephemeral=True)
+            return
+
+        if materia.strip() == "00923":
+            await interaction.response.defer(ephemeral=True)
+
+            deleted_tasks = 0
+            for task in self.bot.db.get_tasks(interaction.guild.id):
+                task_id = task[0]
+
+                cached_messages = self.bot.db.get_task_messages(task_id)
+                for chan_id, msg_id in cached_messages:
+                    try:
+                        channel = self.bot.get_channel(chan_id)
+                        if channel:
+                            msg = await channel.fetch_message(msg_id)
+                            await msg.delete()
+                    except Exception as e:
+                        print(f"Error al eliminar mensaje {msg_id} en canal {chan_id}: {e}")
+
+                self.bot.db.delete_task(task_id)
+                deleted_tasks += 1
+
+            # Las tareas se vuelven a generar con /tareas nuevas.
+            await interaction.followup.send(
+                embed=create_success_embed(f"Limpieza total completada. Tareas eliminadas: {deleted_tasks}."),
+                ephemeral=True,
+            )
+            return
+
+        if not tarea:
+            await interaction.response.send_message("Debe seleccionar una tarea a eliminar.", ephemeral=True)
             return
 
         try:

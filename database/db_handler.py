@@ -1,7 +1,6 @@
 # db_handler.py - Gestión de base de datos SQLite
 import sqlite3
 import datetime
-import os
 
 class DatabaseHandler:
     def __init__(self, db_path="database/bot.db"):
@@ -97,6 +96,13 @@ class DatabaseHandler:
                 cursor.execute('ALTER TABLE tasks ADD COLUMN source_url TEXT')
             except sqlite3.OperationalError:
                 pass
+
+            # Índices para optimizar consultas frecuentes
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_tasks_guild_id ON tasks (guild_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_task_messages_task_id ON task_messages (task_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_enrollments_guild_user ON enrollments (guild_id, user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_deliveries_guild_task_user ON deliveries (guild_id, task_id, user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_course_watch_items_guild ON course_watch_items (guild_id)')
             
             conn.commit()
 
@@ -201,6 +207,39 @@ class DatabaseHandler:
             cursor.execute('SELECT subject FROM enrollments WHERE user_id = ? AND guild_id = ?', (user_id, guild_id))
             return [row[0] for row in cursor.fetchall()]
 
+    # Snapshot de inscripciones para evaluación masiva en recordatorios
+    def get_enrollment_snapshot(self, guild_id):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id, subject FROM enrollments WHERE guild_id = ?', (guild_id,))
+            rows = cursor.fetchall()
+
+        users_with_enrollments = set()
+        subjects_by_user = {}
+        for user_id, subject in rows:
+            users_with_enrollments.add(user_id)
+            subjects_by_user.setdefault(user_id, set()).add(subject)
+
+        return {
+            "users_with_enrollments": users_with_enrollments,
+            "subjects_by_user": subjects_by_user,
+        }
+
+    # Entregas por tareas para evitar consultas repetidas por usuario
+    def get_delivered_pairs_for_tasks(self, guild_id, task_ids):
+        if not task_ids:
+            return set()
+
+        placeholders = ','.join('?' for _ in task_ids)
+        query = f'SELECT task_id, user_id FROM deliveries WHERE guild_id = ? AND task_id IN ({placeholders})'
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, [guild_id, *task_ids])
+            rows = cursor.fetchall()
+
+        return {(task_id, user_id) for task_id, user_id in rows}
+
     # Verificar si un usuario está inscrito en una materia específica
     def is_user_enrolled_in_subject(self, user_id, subject, guild_id):
         with self.get_connection() as conn:
@@ -237,6 +276,21 @@ class DatabaseHandler:
             cursor = conn.cursor()
             cursor.execute('SELECT 1 FROM sent_reminders WHERE task_id = ? AND reminder_type = ?', (task_id, reminder_type))
             return cursor.fetchone() is not None
+
+    # Obtener recordatorios ya enviados para un conjunto de tareas
+    def get_sent_reminders_for_tasks(self, task_ids):
+        if not task_ids:
+            return set()
+
+        placeholders = ','.join('?' for _ in task_ids)
+        query = f'SELECT task_id, reminder_type FROM sent_reminders WHERE task_id IN ({placeholders})'
+
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, task_ids)
+            rows = cursor.fetchall()
+
+        return {(task_id, reminder_type) for task_id, reminder_type in rows}
 
     # Marcar un recordatorio como enviado
     def mark_reminder_sent(self, task_id, reminder_type):

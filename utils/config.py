@@ -3,12 +3,14 @@ import unicodedata
 import re
 import discord
 
+NON_ALNUM_REGEX = re.compile(r'[^a-z0-9]')
+
 # Normaliza el texto para búsquedas consistentes de canales (elimina acentos y caracteres no alfanuméricos)
 def normalize_text(text):
     if not text: return ""
     text = unicodedata.normalize('NFD', text)
-    text = "".join([c for c in text if unicodedata.category(c) != 'Mn'])
-    return re.sub(r'[^a-z0-9]', '', text.lower())
+    text = "".join(c for c in text if unicodedata.category(c) != 'Mn')
+    return NON_ALNUM_REGEX.sub('', text.lower())
 
 # Busca un canal basado en palabras clave o nombres normalizados
 def find_channel(guild, name_query):
@@ -25,16 +27,15 @@ def find_channel(guild, name_query):
     # Normaliza la entrada para la búsqueda
     query = normalize_text(target_name) if target_name else normalize_text(name_query)
     simple_query = normalize_text(name_query)
+    channels_with_norm = [(channel, normalize_text(channel.name)) for channel in guild.text_channels]
 
     # 1. Coincidencia exacta normalizada
-    for channel in guild.text_channels:
-        chan_norm = normalize_text(channel.name)
+    for channel, chan_norm in channels_with_norm:
         if chan_norm == query or chan_norm == simple_query:
             return channel
             
     # 2. Coincidencia parcial usando el nombre mapeado
-    for channel in guild.text_channels:
-        chan_norm = normalize_text(channel.name)
+    for channel, chan_norm in channels_with_norm:
         if query and (query in chan_norm or chan_norm in query):
             return channel
             
@@ -48,8 +49,7 @@ def find_channel(guild, name_query):
     }
     
     search_key = base_keywords.get(simple_query, simple_query)
-    for channel in guild.text_channels:
-        chan_norm = normalize_text(channel.name)
+    for channel, chan_norm in channels_with_norm:
         if search_key in chan_norm:
             return channel
             

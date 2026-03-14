@@ -3,10 +3,10 @@ https://s4vi-bot.onrender.com que le llega cada 5 minutos con por parte de uptim
 tiene que crear un .env con el token del bot.
 
 La ruta principal `/` del `keep_alive.py` ahora devuelve un estado minimalista en JSON:
-- `status`: confirma que el bot está en línea.
-- `metrics.ram`: uso de RAM.
-- `metrics.gpu`: uso de GPU (si no está disponible en el host, responde `N/D`).
-- `metrics.storage`: uso de almacenamiento del disco.
+- `estado`: confirma que el bot está en línea.
+- `metricas.ram`: uso de RAM.
+- `metricas.gpu`: uso de GPU (si no está disponible en el host, responde `No disponible`).
+- `metricas.almacenamiento`: uso de almacenamiento del disco.
 
 EJEMPLO DE .env
 #api del bot del discord

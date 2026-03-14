@@ -25,7 +25,7 @@ class DueDateAI:
             "ninguna",
             "pendiente",
         }
-# esta parte me valio pija y con a chat gpt le pedi que me hicera la lista 
+
         self.month_map_es = {
             "enero": 1,
             "febrero": 2,

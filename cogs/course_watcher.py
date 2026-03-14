@@ -236,6 +236,13 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         created_tasks = 0
         updated_tasks = 0
         already_assigned = []
+        channel_cache = {}
+
+        def resolve_channel(name: str):
+            key = (name or "").strip().lower()
+            if key not in channel_cache:
+                channel_cache[key] = find_channel(guild, name)
+            return channel_cache[key]
 
         if not items:
             return {"created_tasks": 0, "updated_tasks": 0, "already_assigned": []}
@@ -314,9 +321,9 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
                 continue
 
-            target_channel = find_channel(guild, subject)
+            target_channel = resolve_channel(subject)
             if not target_channel:
-                target_channel = find_channel(guild, CHANNELS.get("PENDING", ""))
+                target_channel = resolve_channel(CHANNELS.get("PENDING", ""))
             if not target_channel:
                 continue
 
@@ -353,7 +360,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             except Exception:
                 pass
 
-            dates_channel = find_channel(guild, "fechas-de-entrega")
+            dates_channel = resolve_channel("fechas-de-entrega")
             if dates_channel:
                 try:
                     date_msg = await dates_channel.send(embed=embed)
