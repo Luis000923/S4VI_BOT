@@ -8,6 +8,12 @@
 ## Objetivo
 Sincronizar manualmente el árbol de slash commands del bot.
 
+## Nota de despliegue (Render)
+- La sincronización automática al iniciar ahora está desactivada por defecto para evitar rate limits (`Error 1015`) de Discord/Cloudflare.
+- Se controla con la variable de entorno: `AUTO_SYNC_ON_START`.
+	- Recomendado en Render: `AUTO_SYNC_ON_START=false`.
+	- Solo activar en momentos puntuales si necesitas sincronizar al arranque.
+
 ## Parámetros
 Este comando no recibe parámetros.
 

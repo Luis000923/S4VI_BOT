@@ -38,6 +38,40 @@ Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y 
 11. Si el título es muy largo, lo recorta solo para visualización y conserva el original en DB.
 12. Responde con resumen de actividades nuevas, tareas programadas, tareas actualizadas y tareas ya asignadas.
 
+## ¿Cómo obtiene las tareas de la semana?
+Este es el flujo específico para “traer tareas de una semana”:
+
+1. **Lee el parámetro `semana`** del comando `/tareas nuevas`.
+  - Si envías `/tareas nuevas semana:10`, intenta escanear la **Semana 10**.
+  - Si no envías semana, el bot elige automáticamente la más reciente disponible (prioriza semanas `>= 8`).
+
+2. **Carga la página del curso** en CVirtual y detecta semanas disponibles con `_extract_available_weeks(...)`.
+
+3. **Resuelve la semana objetivo** con `_resolve_target_week(...)`:
+  - Si la semana pedida existe en el índice del curso, usa su URL real.
+  - Si no aparece en el índice, intenta URL directa con `?section=N`.
+  - Si no pediste semana, toma la semana más reciente según la regla anterior.
+
+4. **Escanea solo la sección objetivo** (`...course/view.php?id=...&section=N`) para reducir ruido de otras semanas.
+
+5. **Extrae actividades** de esa sección y filtra los tipos relevantes:
+  - `FORO`
+  - `TAREA`
+
+6. Para cada `TAREA`, **abre el detalle de la actividad** y busca:
+  - `Fecha de entrega` / `Fecha de cierre` (normalizada por IA de fechas).
+  - Indicaciones o descripción de la tarea.
+
+7. **Deduplica y guarda**:
+  - No duplica actividades ya registradas (hash en DB).
+  - Si la tarea ya existe pero cambió en CVirtual (título/fecha/materia/enlace), la actualiza.
+
+8. **Publica y programa**:
+  - Publica actividad nueva en canal de avisos.
+  - Para tareas, crea o actualiza mensajes en el canal de materia y en `fechas-de-entrega`.
+
+En resumen: el bot no “adivina” la semana por la portada del curso; primero resuelve la semana objetivo y luego escanea su sección específica para obtener tareas con mayor precisión.
+
 ## Funciones relacionadas
 - `_resolve_target_week(...)`
 - `_extract_available_weeks(...)`
@@ -51,3 +85,47 @@ Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y 
 
 ## Resultado esperado
 Publicación de nuevas actividades, programación automática de tareas por materia, actualización de tareas existentes y control de duplicados.
+
+## Informe técnico (resumen para ingeniería)
+
+### 1) Propósito del proceso
+El comando `/tareas nuevas` implementa un pipeline de ingesta desde CVirtual (Moodle) para detectar actividades académicas de tipo foro/tarea, con foco en tareas para su programación automática en Discord.
+
+### 2) Arquitectura funcional
+- **Capa de disparo**: comando manual con parámetro de semana opcional.
+- **Capa de adquisición**: autenticación HTTP (`aiohttp`) + descarga de HTML de curso y sección.
+- **Capa de parsing**: extracción robusta por selectores + regex (`WEEK_REGEX`) para identificar semana y actividades.
+- **Capa de enriquecimiento**: consulta de detalle de tarea para extraer fecha (`Fecha de entrega/cierre`) e indicaciones.
+- **Capa de persistencia**: deduplicación por hash e inserción/actualización en DB.
+- **Capa de publicación**: notificación en canal de avisos y sincronización de mensajes en canales de materia.
+
+### 3) Algoritmo de obtención por semana
+1. Resolver `requested_week`:
+  - Si existe en índice de curso, usar URL detectada.
+  - Si no existe, intentar `course_url?section=N`.
+  - Si no hay `requested_week`, seleccionar la mayor semana disponible, priorizando `N >= 8`.
+2. Cargar HTML de la sección objetivo para minimizar ruido de semanas no relevantes.
+3. Extraer nodos de actividad y clasificar (`FORO` / `TAREA`).
+4. Para cada `TAREA`, abrir detalle y normalizar fecha vía `DueDateAI`.
+5. Persistir resultados con control de idempotencia.
+
+### 4) Consistencia e idempotencia
+- **No duplicación de actividades**: hash determinístico por curso + semana + tipo + título + URL.
+- **No duplicación de tareas**: matching principal por `source_url`; fallback por `materia+título normalizado`.
+- **Convergencia de estado**: si CVirtual cambia fecha/título/materia, se actualiza DB y se editan mensajes ya publicados.
+
+### 5) Comportamiento ante fallos
+- Si falla autenticación o una carga HTML, el curso afectado se omite sin tumbar todo el proceso.
+- Si no existe canal de materia, aplica fallback al canal pendiente (si está configurado).
+- Si no se detectan novedades, retorna respuesta explícita sin efectos secundarios.
+
+### 6) Riesgos técnicos y mitigación
+- **Variación de HTML Moodle**: mitigado con selectores de fallback, pero requiere mantenimiento evolutivo.
+- **Dependencia de credenciales/cookies**: validar `.env` y expiración de sesión.
+- **Semana solicitada inexistente**: se intenta por URL directa; puede resultar en escaneo vacío.
+
+### 7) Checklist de validación para ingeniería
+1. Ejecutar `/tareas nuevas semana:N` y confirmar resolución de sección `section=N`.
+2. Verificar detección de `FORO/TAREA` y extracción de fechas en tareas.
+3. Confirmar inserción única en DB y ausencia de duplicados tras reejecución.
+4. Simular cambio en CVirtual (fecha/título) y validar actualización de mensajes existentes.
