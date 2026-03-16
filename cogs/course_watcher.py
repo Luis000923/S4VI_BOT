@@ -543,8 +543,14 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             request_kwargs = self._cookie_request_kwargs()
             async with session.get(MOODLE_LOGIN_URL, **request_kwargs) as response:
                 if response.status != 200:
+                    print(f"CourseWatcher: status {response.status} al obtener login page")
                     return False
                 login_html = await response.text()
+                
+                # Detectar si Cloudflare o Moodle devolvió una página de error
+                if self._is_cloudflare_or_error_page(login_html):
+                    print("CourseWatcher: respuesta bloqueada o error (posible Cloudflare)")
+                    return False
 
             token = self._extract_login_token(login_html)
             payload = {
@@ -560,6 +566,11 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             async with session.post(MOODLE_LOGIN_URL, **post_kwargs) as response:
                 final_url = str(response.url)
                 html = await response.text()
+                
+                # Validar respuesta
+                if self._is_cloudflare_or_error_page(html):
+                    print("CourseWatcher: respuesta post bloqueada o error")
+                    return False
 
             if "login/index.php" in final_url and "invalidlogin" in html.lower():
                 print("CourseWatcher: credenciales Moodle inválidas.")
@@ -576,10 +587,33 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
             async with session.get(url, **request_kwargs) as response:
                 if response.status != 200:
+                    print(f"CourseWatcher: status {response.status} en {url}")
                     return ""
-                return await response.text()
-        except Exception:
+                
+                html = await response.text()
+                
+                # Detectar si es página de Cloudflare o error
+                if self._is_cloudflare_or_error_page(html):
+                    print(f"CourseWatcher: página bloqueada/error en {url}")
+                    return ""
+                
+                return html
+        except Exception as error:
+            print(f"CourseWatcher: excepción al cargar {url}: {error}")
             return ""
+    
+    def _is_cloudflare_or_error_page(self, html: str) -> bool:
+        """Detecta si la respuesta es una página de error/bloqueo de Cloudflare"""
+        if not html:
+            return False
+        html_lower = html.lower()
+        # Detectar características de error Cloudflare
+        if "cloudflare" in html_lower and ("error" in html_lower or "challenge" in html_lower):
+            return True
+        # Detectar error pages generales
+        if any(phrase in html_lower for phrase in ["error 1015", "error 429", "error 403", "you are being rate limited"]):
+            return True
+        return False
 
     def _cookie_request_kwargs(self):
         request_kwargs = {}
