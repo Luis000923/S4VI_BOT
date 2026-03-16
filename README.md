@@ -35,6 +35,7 @@ CVIRTUAL_USER=USUARIO_CVIRTUAL
 CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
 #cookie opcional para cursos privados (Moodle)
 #CVIRTUAL_COOKIE=MoodleSession=...; other_cookie=...
+#también acepta solo el valor de sesión, ej: CVIRTUAL_COOKIE=abc123...
 
 ### CAMBIAR LA MENCION DE LOS DEL GRUPO CON everyone
 

@@ -754,6 +754,8 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
     def _cookie_request_kwargs(self, use_manual_cookie: bool = True):
         request_kwargs = {}
         cookie_header = os.getenv("CVIRTUAL_COOKIE", "").strip() if use_manual_cookie else ""
+        if cookie_header and "=" not in cookie_header:
+            cookie_header = f"MoodleSession={cookie_header}"
         if cookie_header:
             request_kwargs["headers"] = {"Cookie": cookie_header}
         return request_kwargs
