@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import hashlib
 import os
@@ -85,7 +86,12 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         interaction: discord.Interaction,
         semana: app_commands.Range[int, 1, 60] | None = None,
     ):
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception as error:
+            # Si Discord REST está bloqueado o el bot está bajo carga, al menos registrar.
+            print(f"CourseWatcher: no se pudo defer() la interacción: {error}")
+            return
 
         new_items_total = 0
         created_tasks_total = 0
@@ -183,8 +189,12 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 if not html:
                     continue
 
-                soup = BeautifulSoup(html, "html.parser")
-                target_week = self._resolve_target_week(soup, course_url, requested_week=requested_week)
+                target_week = await asyncio.to_thread(
+                    self._resolve_target_week_from_html,
+                    html,
+                    course_url,
+                    requested_week,
+                )
 
                 target_url = course_url
                 target_week_name = None
@@ -198,11 +208,12 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                         if section_html:
                             target_html = section_html
 
-                items = self._extract_activities(
+                items = await asyncio.to_thread(
+                    self._extract_activities,
                     course_name,
                     target_url,
                     target_html,
-                    forced_week_name=target_week_name,
+                    target_week_name,
                 )
 
                 for item in items:
@@ -431,12 +442,18 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 "instructions": None,
             }
 
-        detected_due_date = self._extract_due_date_from_html(html)
-        detected_instructions = self._extract_instructions_from_html(html)
+        detected_due_date, detected_instructions = await asyncio.gather(
+            asyncio.to_thread(self._extract_due_date_from_html, html),
+            asyncio.to_thread(self._extract_instructions_from_html, html),
+        )
         return {
             "due_date": detected_due_date or "No asignada",
             "instructions": detected_instructions,
         }
+
+    def _resolve_target_week_from_html(self, html: str, course_url: str, requested_week: int | None = None):
+        soup = BeautifulSoup(html, "html.parser")
+        return self._resolve_target_week(soup, course_url, requested_week=requested_week)
 
     def _extract_instructions_from_html(self, html: str):
         soup = BeautifulSoup(html, "html.parser")
