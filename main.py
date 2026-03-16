@@ -2,12 +2,14 @@
 import discord
 from discord.ext import commands
 import os
+import random
+import time
 from dotenv import load_dotenv
 from database.db_handler import DatabaseHandler
 from keep_alive import keep_alive
 
 load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip()
 
 # Clase de configuración del bot
 class S4VIBot(commands.Bot):
@@ -46,23 +48,54 @@ async def sync(ctx):
     await ctx.send("Sincronización completada.")
 
 if __name__ == "__main__":
-    if not TOKEN:
-        print("FATA: DISCORD_TOKEN no definido en variables de entorno.")
-        exit(1)
-    
+    # Iniciar servicio web siempre, aunque Discord falle, para evitar 502/restarts.
+    print("Iniciando servidor web (keep_alive)...")
     try:
-        # Iniciar servicio para mantener el bot activo
-        print("Iniciando servidor web (keep_alive)...")
         keep_alive()
         print("Servidor web activo.")
-        
-        # Ejecución del bot
-        print("Conectando a Discord...")
-        bot.run(TOKEN)
-    except KeyboardInterrupt:
-        print("\nBot detenido por usuario.")
     except Exception as e:
-        print(f"ERROR CRÍTICO: {e}")
+        print(f"ADVERTENCIA: keep_alive falló: {e}")
         import traceback
+
         traceback.print_exc()
-        exit(1)
+
+    if not TOKEN:
+        print("FATAL: DISCORD_TOKEN no definido en variables de entorno.")
+        print("Manteniendo el proceso vivo para evitar reinicios; configura la variable y redeploy.")
+        while True:
+            time.sleep(3600)
+
+    attempt = 0
+    while True:
+        try:
+            attempt += 1
+            if attempt == 1:
+                print("Conectando a Discord...")
+            else:
+                print(f"Reintentando conexión a Discord (intento {attempt})...")
+
+            # Bloqueante; si sale por error, lo capturamos y reintentamos con backoff.
+            bot.run(TOKEN)
+            print("Discord bot finalizó (bot.run retornó). Reintentando en 15s...")
+            time.sleep(15)
+            continue
+        except KeyboardInterrupt:
+            print("\nBot detenido por usuario.")
+            break
+        except discord.LoginFailure as e:
+            print(f"FATAL: LoginFailure (token inválido o revocado): {e}")
+            print("No se reintentará automáticamente. Manteniendo el proceso vivo.")
+            while True:
+                time.sleep(3600)
+        except Exception as e:
+            # Backoff exponencial con jitter para no agravar rate limits (p. ej. Cloudflare 1015).
+            backoff_base = min(300, 2 ** min(attempt, 8))
+            jitter = random.uniform(0, backoff_base * 0.25)
+            sleep_s = backoff_base + jitter
+
+            print(f"ERROR ejecutando/conectando el bot: {e}")
+            import traceback
+
+            traceback.print_exc()
+            print(f"Esperando {sleep_s:.1f}s antes de reintentar...")
+            time.sleep(sleep_s)

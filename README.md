@@ -2,6 +2,8 @@ El bot corre en render y se mantiene activo gracias a una petición al sitio web
 https://s4vi-bot.onrender.com que le llega cada 5 minutos con por parte de uptime robot
 tiene que crear un .env con el token del bot.
 
+Nota (Render/Discord): si ocurre un bloqueo temporal o error transitorio al conectar (por ejemplo, Cloudflare 1015), el proceso no termina; mantiene el endpoint web activo y reintenta la conexión a Discord con backoff.
+
 La ruta principal `/` del `keep_alive.py` devuelve estado y métricas reales en JSON:
 - `estado`: confirma que el bot está en línea.
 - `actualizado_en`: timestamp UTC del muestreo.
