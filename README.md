@@ -24,8 +24,6 @@ EJEMPLO DE .env
 DISCORD_TOKEN=TOKEN_DEL_BOT
 #id del grupo
 GUILD_ID=ID_DEL_SERVIDOR
-# opcional: activar sincronización automática al iniciar (recomendado dejar en false en Render)
-AUTO_SYNC_ON_START=false
 #usuario y contraseña para acceder a CVIRTUAL
 CVIRTUAL_USER=USUARIO_CVIRTUAL
 CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL

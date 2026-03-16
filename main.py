@@ -9,13 +9,6 @@ from keep_alive import keep_alive
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on", "si", "sí"}
-
 # Clase de configuración del bot
 class S4VIBot(commands.Bot):
     def __init__(self):
@@ -31,26 +24,8 @@ class S4VIBot(commands.Bot):
             if filename.endswith(".py"):
                 await self.load_extension(f"cogs.{filename[:-3]}")
         
-        auto_sync = _env_flag("AUTO_SYNC_ON_START", default=False)
-        if not auto_sync:
-            print("Sincronización automática desactivada (AUTO_SYNC_ON_START=false). Usa !sync cuando sea necesario.")
-            return
-
-        # Sincronización opcional de comandos de barra (slash commands) en arranque
-        guild_id = os.getenv("GUILD_ID")
-        try:
-            if guild_id:
-                guild = discord.Object(id=int(guild_id))
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-                print(f"Comandos sincronizados para el servidor: {guild_id}")
-            else:
-                await self.tree.sync()
-                print("Comandos globales sincronizados.")
-        except discord.HTTPException as e:
-            print(f"Error HTTP al sincronizar comandos: {e.status} {e.text}")
-        except Exception as e:
-            print(f"Error de sincronización: {e}")
+        print("✓ Cogs cargados. Sincronización de startup desactivada por defecto.")
+        print("  Usa el comando !sync solo cuando necesites actualizar slash commands.")
 
     async def on_ready(self):
         print(f"Sesión iniciada como: {self.user}")
