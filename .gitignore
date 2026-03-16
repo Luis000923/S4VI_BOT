@@ -16,6 +16,8 @@ __pycache__/
 tmp/
 temp/
 logs/
+moodle_*.html
+moodle_*.txt
 
 # IDEs
 .vscode/

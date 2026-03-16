@@ -4,12 +4,22 @@ from discord.ext import commands
 import os
 import random
 import time
+import logging
 from dotenv import load_dotenv
 from database.db_handler import DatabaseHandler
 from keep_alive import keep_alive
 
 load_dotenv()
 TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip()
+
+
+def _configure_logging():
+    level_name = (os.getenv("LOG_LEVEL") or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
 
 # Clase de configuración del bot
 class S4VIBot(commands.Bot):
@@ -38,16 +48,21 @@ class S4VIBot(commands.Bot):
         print(f"Sesión iniciada como: {self.user}")
         print("------")
 
-bot = S4VIBot()
 
-# Comando administrativo para sincronización manual
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def sync(ctx):
-    await bot.tree.sync()
-    await ctx.send("Sincronización completada.")
+def build_bot() -> S4VIBot:
+    bot = S4VIBot()
+
+    # Comando administrativo para sincronización manual
+    @bot.command()
+    @commands.has_permissions(administrator=True)
+    async def sync(ctx):
+        await bot.tree.sync()
+        await ctx.send("Sincronización completada.")
+
+    return bot
 
 if __name__ == "__main__":
+    _configure_logging()
     # Iniciar servicio web siempre, aunque Discord falle, para evitar 502/restarts.
     print("Iniciando servidor web (keep_alive)...")
     try:
@@ -74,8 +89,10 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando conexión a Discord (intento {attempt})...")
 
+            bot = build_bot()
+
             # Bloqueante; si sale por error, lo capturamos y reintentamos con backoff.
-            bot.run(TOKEN)
+            bot.run(TOKEN, reconnect=True, log_handler=None)
             print("Discord bot finalizó (bot.run retornó). Reintentando en 15s...")
             time.sleep(15)
             continue

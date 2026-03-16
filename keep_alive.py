@@ -9,6 +9,11 @@ import shutil
 import time
 
 try:
+    from waitress import serve as waitress_serve
+except Exception:
+    waitress_serve = None
+
+try:
     from zoneinfo import ZoneInfo
 except ImportError:
     ZoneInfo = None
@@ -247,6 +252,10 @@ def home():
 
 def run():
     port = int(os.getenv("PORT", 8080))
+    if waitress_serve is not None:
+        waitress_serve(app, host="0.0.0.0", port=port, threads=4)
+        return
+
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 def keep_alive():

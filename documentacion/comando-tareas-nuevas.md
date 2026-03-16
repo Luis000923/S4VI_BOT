@@ -2,7 +2,7 @@
 
 ## Ubicación
 - Cog: `cogs/course_watcher.py` (GroupCog `tareas`)
-- Función del comando: `tareas_nuevas(self, interaction, semana=None)`
+- Función del comando: `tareas_nuevas(self, interaction, semana=None, contrasena=None)`
 
 ## Objetivo
 Forzar escaneo de CVirtual para detectar actividades nuevas de tipo foro y tarea.
@@ -12,9 +12,13 @@ Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y 
 - `semana` (opcional, entero 1..60):
   - Si se define, el escaneo se concentra en esa semana.
   - Si no se define, usa la semana más reciente disponible (priorizando semana >= 8).
+- `contrasena` (opcional, texto):
+  - Si envías `00923`, se omite el cooldown de 30 minutos para esa ejecución.
+  - Si no se envía o es incorrecta, aplica cooldown normal.
 
 ## Límite de uso
 - El comando tiene cooldown de **1 uso cada 30 minutos** (por servidor).
+- Excepción: si `contrasena=00923`, el comando se ejecuta sin cooldown.
 
 ## Flujo interno
 1. Difiriere respuesta efímera.
@@ -82,6 +86,7 @@ En resumen: el bot no “adivina” la semana por la portada del curso; primero 
 - Credenciales inválidas en `.env` (`CVIRTUAL_USER`, `CVIRTUAL_PASSWORD`).
 - No encontrar canal de avisos configurado.
 - Estructura HTML variable de Moodle (mitigada con selectores de fallback).
+- Si falla autenticación en CVirtual, el comando responde explícitamente con aviso de credenciales en lugar de mostrar "sin actividades".
 
 ## Resultado esperado
 Publicación de nuevas actividades, programación automática de tareas por materia, actualización de tareas existentes y control de duplicados.

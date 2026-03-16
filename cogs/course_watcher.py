@@ -36,6 +36,7 @@ SCHEDULE_SLOTS = {
 TIMEZONE_NAME = "America/El_Salvador"
 WEEK_REGEX = re.compile(r"semana\s*\d+", re.IGNORECASE)
 MIN_WEEK_TO_SCAN = 8
+BYPASS_SCAN_PASSWORD = (os.getenv("TAREAS_NUEVAS_BYPASS_PASSWORD") or "00923").strip()
 
 COURSE_SUBJECT_MAP = {
     "INFRAESTRUCTURA DE RED": "Infraestructura de Red",
@@ -44,6 +45,39 @@ COURSE_SUBJECT_MAP = {
     "MATEMATICA": "Matemática",
     "SEGURIDAD DE LA INFORMACION": "Ciberseguridad",
 }
+
+
+def _extract_interaction_option_value(interaction: discord.Interaction, option_name: str):
+    namespace_value = getattr(getattr(interaction, "namespace", None), option_name, None)
+    if namespace_value is not None:
+        return namespace_value
+
+    data = getattr(interaction, "data", None)
+    if not isinstance(data, dict):
+        return None
+
+    def walk(options):
+        if not isinstance(options, list):
+            return None
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            if option.get("name") == option_name and "value" in option:
+                return option.get("value")
+
+            nested = walk(option.get("options"))
+            if nested is not None:
+                return nested
+        return None
+
+    return walk(data.get("options"))
+
+
+def _tareas_nuevas_dynamic_cooldown(interaction: discord.Interaction):
+    provided_password = _extract_interaction_option_value(interaction, "contrasena")
+    if provided_password is not None and str(provided_password).strip() == BYPASS_SCAN_PASSWORD:
+        return None
+    return app_commands.Cooldown(1, 1800.0)
 
 
 class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="Escaneo de cursos virtuales"):
@@ -79,12 +113,19 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         await self.bot.wait_until_ready()
 
     @app_commands.command(name="nuevas", description="Forzar escaneo de cursos y detectar nuevos foros/tareas")
-    @app_commands.describe(semana="Número de semana a escanear (opcional)")
-    @app_commands.checks.cooldown(1, 1800.0, key=lambda interaction: interaction.guild_id or interaction.user.id)
+    @app_commands.describe(
+        semana="Número de semana a escanear (opcional)",
+        contrasena="Contraseña para omitir cooldown de 30 minutos (opcional)",
+    )
+    @app_commands.checks.dynamic_cooldown(
+        _tareas_nuevas_dynamic_cooldown,
+        key=lambda interaction: interaction.guild_id or interaction.user.id,
+    )
     async def tareas_nuevas(
         self,
         interaction: discord.Interaction,
         semana: app_commands.Range[int, 1, 60] | None = None,
+        contrasena: str | None = None,
     ):
         try:
             await interaction.response.defer(ephemeral=True)
@@ -96,6 +137,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         new_items_total = 0
         created_tasks_total = 0
         updated_tasks_total = 0
+        auth_failed_guilds = 0
         already_assigned_items = []
         for guild in self.bot.guilds:
             if interaction.guild and guild.id != interaction.guild.id:
@@ -109,7 +151,16 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             new_items_total += report["new_activities"]
             created_tasks_total += report["created_tasks"]
             updated_tasks_total += report.get("updated_tasks", 0)
+            if report.get("auth_failed"):
+                auth_failed_guilds += 1
             already_assigned_items.extend(report["already_assigned"])
+
+        if auth_failed_guilds > 0 and new_items_total == 0 and created_tasks_total == 0 and updated_tasks_total == 0:
+            await interaction.followup.send(
+                "No se pudo autenticar en CVirtual. Verifica `CVIRTUAL_USER`, `CVIRTUAL_PASSWORD` o `CVIRTUAL_COOKIE` en el entorno del bot.",
+                ephemeral=True,
+            )
+            return
 
         if new_items_total == 0 and created_tasks_total == 0 and updated_tasks_total == 0 and not already_assigned_items:
             week_text = f" en Semana {semana}" if semana is not None else ""
@@ -140,10 +191,14 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             wait_seconds = max(1, int(error.retry_after))
             minutes = wait_seconds // 60
             seconds = wait_seconds % 60
-            await interaction.response.send_message(
-                f"Este comando puede usarse 1 vez cada 30 minutos. Intenta de nuevo en {minutes}m {seconds}s.",
-                ephemeral=True,
-            )
+            message = f"Este comando puede usarse 1 vez cada 30 minutos. Intenta de nuevo en {minutes}m {seconds}s."
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(message, ephemeral=True)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+            except discord.NotFound:
+                pass
             return
         raise error
 
@@ -173,6 +228,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             "new_activities": len(new_items),
             "created_tasks": task_report["created_tasks"],
             "updated_tasks": task_report.get("updated_tasks", 0),
+            "auth_failed": bool(scan_result.get("auth_failed")),
             "already_assigned": task_report["already_assigned"],
         }
 
@@ -182,10 +238,20 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            await self._authenticate_session(session)
+            authenticated, use_manual_cookie_for_scan = await self._authenticate_session(session)
+            if not authenticated:
+                return {
+                    "new_items": [],
+                    "detected_items": [],
+                    "auth_failed": True,
+                }
 
             for course_name, course_url in COURSES.items():
-                html = await self._fetch_course_html(session, course_url)
+                html = await self._fetch_course_html(
+                    session,
+                    course_url,
+                    use_manual_cookie=use_manual_cookie_for_scan,
+                )
                 if not html:
                     continue
 
@@ -204,7 +270,11 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     target_url = target_week["week_url"]
                     target_week_name = target_week["week_name"]
                     if target_url != course_url:
-                        section_html = await self._fetch_course_html(session, target_url)
+                        section_html = await self._fetch_course_html(
+                            session,
+                            target_url,
+                            use_manual_cookie=use_manual_cookie_for_scan,
+                        )
                         if section_html:
                             target_html = section_html
 
@@ -218,7 +288,11 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
                 for item in items:
                     if item["activity_type"] == "TAREA":
-                        details = await self._extract_assignment_details(session, item["url"])
+                        details = await self._extract_assignment_details(
+                            session,
+                            item["url"],
+                            use_manual_cookie=use_manual_cookie_for_scan,
+                        )
                         item["due_date"] = details["due_date"]
                         item["instructions"] = details["instructions"]
 
@@ -241,6 +315,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         return {
             "new_items": new_items,
             "detected_items": detected_items,
+            "auth_failed": False,
         }
 
     async def _schedule_detected_tasks(self, guild: discord.Guild, items: list[dict], command_user_id: int | None = None):
@@ -434,8 +509,13 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             except Exception:
                 continue
 
-    async def _extract_assignment_details(self, session: aiohttp.ClientSession, assignment_url: str):
-        html = await self._fetch_course_html(session, assignment_url)
+    async def _extract_assignment_details(
+        self,
+        session: aiohttp.ClientSession,
+        assignment_url: str,
+        use_manual_cookie: bool = True,
+    ):
+        html = await self._fetch_course_html(session, assignment_url, use_manual_cookie=use_manual_cookie)
         if not html:
             return {
                 "due_date": "No asignada",
@@ -552,59 +632,76 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
     async def _authenticate_session(self, session: aiohttp.ClientSession):
         username = os.getenv("CVIRTUAL_USER", "").strip()
         password = os.getenv("CVIRTUAL_PASSWORD", "").strip()
+        cookie_header = os.getenv("CVIRTUAL_COOKIE", "").strip()
 
-        if not username or not password:
-            return False
+        if username and password:
+            try:
+                request_kwargs = self._cookie_request_kwargs(use_manual_cookie=False)
+                async with session.get(MOODLE_LOGIN_URL, **request_kwargs) as response:
+                    if response.status != 200:
+                        print(f"CourseWatcher: status {response.status} al obtener login page")
+                        return False, False
+                    login_html = await response.text()
 
+                    if self._is_cloudflare_or_error_page(login_html):
+                        print("CourseWatcher: respuesta bloqueada o error (posible Cloudflare)")
+                        return False, False
+
+                token = self._extract_login_token(login_html)
+                payload = {
+                    "username": username,
+                    "password": password,
+                }
+                if token:
+                    payload["logintoken"] = token
+
+                post_kwargs = self._cookie_request_kwargs(use_manual_cookie=False)
+                post_kwargs["data"] = payload
+
+                async with session.post(MOODLE_LOGIN_URL, **post_kwargs) as response:
+                    final_url = str(response.url)
+                    html = await response.text()
+
+                    if self._is_cloudflare_or_error_page(html):
+                        print("CourseWatcher: respuesta post bloqueada o error")
+                        return False, False
+
+                if "login/index.php" in final_url and "invalidlogin" in html.lower():
+                    print("CourseWatcher: credenciales Moodle inválidas.")
+                else:
+                    session_ok = await self._verify_authenticated_session(session, use_manual_cookie=False)
+                    if session_ok:
+                        return True, False
+                    print("CourseWatcher: login por credenciales no completado; intentando con CVIRTUAL_COOKIE")
+            except Exception as error:
+                print(f"CourseWatcher: error autenticando en Moodle con credenciales: {error}")
+
+        if cookie_header:
+            cookie_ok = await self._verify_authenticated_session(session, use_manual_cookie=True)
+            if cookie_ok:
+                print("CourseWatcher: sesión autenticada usando CVIRTUAL_COOKIE")
+                return True, True
+            print("CourseWatcher: CVIRTUAL_COOKIE no válida o expirada")
+
+        return False, False
+
+    async def _fetch_course_html(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        use_manual_cookie: bool = True,
+    ) -> str:
         try:
-            request_kwargs = self._cookie_request_kwargs()
-            async with session.get(MOODLE_LOGIN_URL, **request_kwargs) as response:
-                if response.status != 200:
-                    print(f"CourseWatcher: status {response.status} al obtener login page")
-                    return False
-                login_html = await response.text()
-                
-                # Detectar si Cloudflare o Moodle devolvió una página de error
-                if self._is_cloudflare_or_error_page(login_html):
-                    print("CourseWatcher: respuesta bloqueada o error (posible Cloudflare)")
-                    return False
-
-            token = self._extract_login_token(login_html)
-            payload = {
-                "username": username,
-                "password": password,
-            }
-            if token:
-                payload["logintoken"] = token
-
-            post_kwargs = self._cookie_request_kwargs()
-            post_kwargs["data"] = payload
-
-            async with session.post(MOODLE_LOGIN_URL, **post_kwargs) as response:
-                final_url = str(response.url)
-                html = await response.text()
-                
-                # Validar respuesta
-                if self._is_cloudflare_or_error_page(html):
-                    print("CourseWatcher: respuesta post bloqueada o error")
-                    return False
-
-            if "login/index.php" in final_url and "invalidlogin" in html.lower():
-                print("CourseWatcher: credenciales Moodle inválidas.")
-                return False
-
-            return True
-        except Exception as error:
-            print(f"CourseWatcher: error autenticando en Moodle: {error}")
-            return False
-
-    async def _fetch_course_html(self, session: aiohttp.ClientSession, url: str) -> str:
-        try:
-            request_kwargs = self._cookie_request_kwargs()
+            request_kwargs = self._cookie_request_kwargs(use_manual_cookie=use_manual_cookie)
 
             async with session.get(url, **request_kwargs) as response:
                 if response.status != 200:
                     print(f"CourseWatcher: status {response.status} en {url}")
+                    return ""
+
+                final_url = str(response.url)
+                if "login/index.php" in final_url:
+                    print(f"CourseWatcher: redirigido a login al cargar {url}")
                     return ""
                 
                 html = await response.text()
@@ -632,9 +729,31 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             return True
         return False
 
-    def _cookie_request_kwargs(self):
+    async def _verify_authenticated_session(self, session: aiohttp.ClientSession, use_manual_cookie: bool = False) -> bool:
+        probe_urls = [f"{MOODLE_BASE_URL}/my/"]
+        if COURSES:
+            probe_urls.append(next(iter(COURSES.values())))
+
+        for url in probe_urls:
+            try:
+                async with session.get(url, **self._cookie_request_kwargs(use_manual_cookie=use_manual_cookie)) as response:
+                    final_url = str(response.url)
+                    html = await response.text()
+                    if response.status != 200:
+                        continue
+                    if "login/index.php" in final_url:
+                        continue
+                    if self._is_cloudflare_or_error_page(html):
+                        continue
+                    return True
+            except Exception:
+                continue
+
+        return False
+
+    def _cookie_request_kwargs(self, use_manual_cookie: bool = True):
         request_kwargs = {}
-        cookie_header = os.getenv("CVIRTUAL_COOKIE", "").strip()
+        cookie_header = os.getenv("CVIRTUAL_COOKIE", "").strip() if use_manual_cookie else ""
         if cookie_header:
             request_kwargs["headers"] = {"Cookie": cookie_header}
         return request_kwargs

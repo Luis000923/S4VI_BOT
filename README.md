@@ -26,6 +26,10 @@ EJEMPLO DE .env
 DISCORD_TOKEN=TOKEN_DEL_BOT
 #id del grupo
 GUILD_ID=ID_DEL_SERVIDOR
+#nivel de logs (opcional): DEBUG, INFO, WARNING, ERROR
+LOG_LEVEL=INFO
+#contraseña de bypass para /tareas nuevas (opcional)
+TAREAS_NUEVAS_BYPASS_PASSWORD=00923
 #usuario y contraseña para acceder a CVIRTUAL
 CVIRTUAL_USER=USUARIO_CVIRTUAL
 CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
