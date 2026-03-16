@@ -139,6 +139,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         updated_tasks_total = 0
         auth_failed_guilds = 0
         already_assigned_items = []
+        blocked_detected = False
         for guild in self.bot.guilds:
             if interaction.guild and guild.id != interaction.guild.id:
                 continue
@@ -154,10 +155,19 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             if report.get("auth_failed"):
                 auth_failed_guilds += 1
             already_assigned_items.extend(report["already_assigned"])
+            if report.get("blocked"):
+                blocked_detected = True
 
         if auth_failed_guilds > 0 and new_items_total == 0 and created_tasks_total == 0 and updated_tasks_total == 0:
             await interaction.followup.send(
                 "No se pudo autenticar en CVirtual. Verifica `CVIRTUAL_USER`, `CVIRTUAL_PASSWORD` o `CVIRTUAL_COOKIE` en el entorno del bot.",
+                ephemeral=True,
+            )
+            return
+
+        if blocked_detected:
+            await interaction.followup.send(
+                "El comando no pudo completarse porque la IP del bot está siendo bloqueada al consultar CVirtual (por ejemplo, Cloudflare 1015/429). Revisa la whitelist/proxy configurados en Render y vuelve a intentarlo.",
                 ephemeral=True,
             )
             return
@@ -230,11 +240,13 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             "updated_tasks": task_report.get("updated_tasks", 0),
             "auth_failed": bool(scan_result.get("auth_failed")),
             "already_assigned": task_report["already_assigned"],
+            "blocked": bool(scan_result.get("blocked")),
         }
 
     async def _scan_courses_for_guild(self, guild_id: int, requested_week: int | None = None):
         new_items = []
         detected_items = []
+        scan_blocked = False
 
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -244,14 +256,21 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     "new_items": [],
                     "detected_items": [],
                     "auth_failed": True,
+                    "blocked": False,
                 }
 
             for course_name, course_url in COURSES.items():
-                html = await self._fetch_course_html(
+                if scan_blocked:
+                    break
+
+                html, blocked = await self._fetch_course_html(
                     session,
                     course_url,
                     use_manual_cookie=use_manual_cookie_for_scan,
                 )
+                if blocked:
+                    scan_blocked = True
+                    break
                 if not html:
                     continue
 
@@ -270,13 +289,19 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     target_url = target_week["week_url"]
                     target_week_name = target_week["week_name"]
                     if target_url != course_url:
-                        section_html = await self._fetch_course_html(
+                        section_html, section_blocked = await self._fetch_course_html(
                             session,
                             target_url,
                             use_manual_cookie=use_manual_cookie_for_scan,
                         )
+                        if section_blocked:
+                            scan_blocked = True
+                            break
                         if section_html:
                             target_html = section_html
+
+                if scan_blocked:
+                    break
 
                 items = await asyncio.to_thread(
                     self._extract_activities,
@@ -286,6 +311,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     target_week_name,
                 )
 
+                task_interrupted = False
                 for item in items:
                     if item["activity_type"] == "TAREA":
                         details = await self._extract_assignment_details(
@@ -293,10 +319,17 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                             item["url"],
                             use_manual_cookie=use_manual_cookie_for_scan,
                         )
+                        if details.get("blocked"):
+                            scan_blocked = True
+                            task_interrupted = True
+                            break
                         item["due_date"] = details["due_date"]
                         item["instructions"] = details["instructions"]
 
                     detected_items.append(item)
+
+                if scan_blocked or task_interrupted:
+                    break
 
                 for item in items:
                     item_hash = self._hash_item(item)
@@ -316,6 +349,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             "new_items": new_items,
             "detected_items": detected_items,
             "auth_failed": False,
+            "blocked": scan_blocked,
         }
 
     async def _schedule_detected_tasks(self, guild: discord.Guild, items: list[dict], command_user_id: int | None = None):
@@ -515,11 +549,12 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         assignment_url: str,
         use_manual_cookie: bool = True,
     ):
-        html = await self._fetch_course_html(session, assignment_url, use_manual_cookie=use_manual_cookie)
+        html, blocked = await self._fetch_course_html(session, assignment_url, use_manual_cookie=use_manual_cookie)
         if not html:
             return {
                 "due_date": "No asignada",
                 "instructions": None,
+                "blocked": bool(blocked),
             }
 
         detected_due_date, detected_instructions = await asyncio.gather(
@@ -529,6 +564,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         return {
             "due_date": detected_due_date or "No asignada",
             "instructions": detected_instructions,
+            "blocked": False,
         }
 
     def _resolve_target_week_from_html(self, html: str, course_url: str, requested_week: int | None = None):
@@ -690,31 +726,31 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         session: aiohttp.ClientSession,
         url: str,
         use_manual_cookie: bool = True,
-    ) -> str:
+    ) -> tuple[str, bool]:
         try:
             request_kwargs = self._cookie_request_kwargs(use_manual_cookie=use_manual_cookie)
 
             async with session.get(url, **request_kwargs) as response:
                 if response.status != 200:
                     print(f"CourseWatcher: status {response.status} en {url}")
-                    return ""
+                    return "", False
 
                 final_url = str(response.url)
                 if "login/index.php" in final_url:
                     print(f"CourseWatcher: redirigido a login al cargar {url}")
-                    return ""
+                    return "", False
                 
                 html = await response.text()
                 
                 # Detectar si es página de Cloudflare o error
                 if self._is_cloudflare_or_error_page(html):
                     print(f"CourseWatcher: página bloqueada/error en {url}")
-                    return ""
+                    return "", True
                 
-                return html
+                return html, False
         except Exception as error:
             print(f"CourseWatcher: excepción al cargar {url}: {error}")
-            return ""
+            return "", False
     
     def _is_cloudflare_or_error_page(self, html: str) -> bool:
         """Detecta si la respuesta es una página de error/bloqueo de Cloudflare"""
