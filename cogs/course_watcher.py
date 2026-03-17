@@ -1,16 +1,14 @@
 import asyncio
-import datetime
 import hashlib
 import os
 import re
 from urllib.parse import urljoin
-from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
 from bs4 import BeautifulSoup
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 from utils.config import CHANNELS, find_channel
 from utils.date_ai import DueDateAI
@@ -27,13 +25,6 @@ COURSES = {
 MOODLE_BASE_URL = "https://www.cvirtualuees.edu.sv"
 MOODLE_LOGIN_URL = f"{MOODLE_BASE_URL}/login/index.php"
 
-SCHEDULE_SLOTS = {
-    (0, 6, 0),   # Lunes 06:00
-    (2, 18, 0),  # Miércoles 18:00
-    (4, 23, 0),  # Viernes 23:00
-}
-
-TIMEZONE_NAME = "America/El_Salvador"
 WEEK_REGEX = re.compile(r"semana\s*\d+", re.IGNORECASE)
 MIN_WEEK_TO_SCAN = 8
 BYPASS_SCAN_PASSWORD = (os.getenv("TAREAS_NUEVAS_BYPASS_PASSWORD") or "00923").strip()
@@ -83,34 +74,7 @@ def _tareas_nuevas_dynamic_cooldown(interaction: discord.Interaction):
 class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="Escaneo de cursos virtuales"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.timezone = ZoneInfo(TIMEZONE_NAME)
         self.due_date_ai = DueDateAI(default_hour=12, default_minute=0)
-        self.last_slot_processed = None
-        self.scan_courses_task.start()
-
-    def cog_unload(self):
-        self.scan_courses_task.cancel()
-
-    @tasks.loop(minutes=1)
-    async def scan_courses_task(self):
-        now = datetime.datetime.now(self.timezone).replace(second=0, microsecond=0)
-        slot = (now.weekday(), now.hour, now.minute)
-
-        if slot not in SCHEDULE_SLOTS:
-            return
-
-        slot_key = now.strftime("%Y-%m-%d %H:%M")
-        if slot_key == self.last_slot_processed:
-            return
-
-        self.last_slot_processed = slot_key
-
-        for guild in self.bot.guilds:
-            await self._scan_and_notify(guild)
-
-    @scan_courses_task.before_loop
-    async def before_scan_courses_task(self):
-        await self.bot.wait_until_ready()
 
     @app_commands.command(name="nuevas", description="Forzar escaneo de cursos y detectar nuevos foros/tareas")
     @app_commands.describe(
