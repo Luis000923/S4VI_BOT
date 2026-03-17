@@ -1,14 +1,16 @@
 import asyncio
+import datetime
 import hashlib
 import os
 import re
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import discord
 from bs4 import BeautifulSoup
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.config import CHANNELS, find_channel
 from utils.date_ai import DueDateAI
@@ -25,6 +27,16 @@ COURSES = {
 MOODLE_BASE_URL = "https://www.cvirtualuees.edu.sv"
 MOODLE_LOGIN_URL = f"{MOODLE_BASE_URL}/login/index.php"
 
+SCHEDULE_SLOTS = {
+    (0, 6, 0),   # Lunes 06:00
+    (3, 18, 0),  # Jueves 18:00
+    (5, 21, 0),  # Sábado 21:00
+}
+
+TIMEZONE_NAME = "America/El_Salvador"
+DAILY_SCAN_LIMIT = 2
+GLOBAL_SCAN_COMMAND_KEY = "tareas_nuevas_global"
+
 WEEK_REGEX = re.compile(r"semana\s*\d+", re.IGNORECASE)
 MIN_WEEK_TO_SCAN = 8
 BYPASS_SCAN_PASSWORD = (os.getenv("TAREAS_NUEVAS_BYPASS_PASSWORD") or "00923").strip()
@@ -36,54 +48,45 @@ COURSE_SUBJECT_MAP = {
     "MATEMATICA": "Matemática",
     "SEGURIDAD DE LA INFORMACION": "Ciberseguridad",
 }
-
-
-def _extract_interaction_option_value(interaction: discord.Interaction, option_name: str):
-    namespace_value = getattr(getattr(interaction, "namespace", None), option_name, None)
-    if namespace_value is not None:
-        return namespace_value
-
-    data = getattr(interaction, "data", None)
-    if not isinstance(data, dict):
-        return None
-
-    def walk(options):
-        if not isinstance(options, list):
-            return None
-        for option in options:
-            if not isinstance(option, dict):
-                continue
-            if option.get("name") == option_name and "value" in option:
-                return option.get("value")
-
-            nested = walk(option.get("options"))
-            if nested is not None:
-                return nested
-        return None
-
-    return walk(data.get("options"))
-
-
-def _tareas_nuevas_dynamic_cooldown(interaction: discord.Interaction):
-    provided_password = _extract_interaction_option_value(interaction, "contrasena")
-    if provided_password is not None and str(provided_password).strip() == BYPASS_SCAN_PASSWORD:
-        return None
-    return app_commands.Cooldown(1, 1800.0)
-
-
 class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="Escaneo de cursos virtuales"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.timezone = ZoneInfo(TIMEZONE_NAME)
         self.due_date_ai = DueDateAI(default_hour=12, default_minute=0)
+        self.last_slot_processed = None
+        self.scan_courses_task.start()
+
+    def cog_unload(self):
+        self.scan_courses_task.cancel()
+
+    @tasks.loop(minutes=1)
+    async def scan_courses_task(self):
+        now = datetime.datetime.now(self.timezone).replace(second=0, microsecond=0)
+        slot = (now.weekday(), now.hour, now.minute)
+
+        if slot not in SCHEDULE_SLOTS:
+            return
+
+        slot_key = now.strftime("%Y-%m-%d %H:%M")
+        if slot_key == self.last_slot_processed:
+            return
+
+        self.last_slot_processed = slot_key
+
+        for guild in self.bot.guilds:
+            try:
+                await self._scan_and_notify(guild)
+            except Exception as error:
+                print(f"CourseWatcher: error en escaneo automático para guild {guild.id}: {error}")
+
+    @scan_courses_task.before_loop
+    async def before_scan_courses_task(self):
+        await self.bot.wait_until_ready()
 
     @app_commands.command(name="nuevas", description="Forzar escaneo de cursos y detectar nuevos foros/tareas")
     @app_commands.describe(
         semana="Número de semana a escanear (opcional)",
-        contrasena="Contraseña para omitir cooldown de 30 minutos (opcional)",
-    )
-    @app_commands.checks.dynamic_cooldown(
-        _tareas_nuevas_dynamic_cooldown,
-        key=lambda interaction: interaction.guild_id or interaction.user.id,
+        contrasena="Contraseña para omitir límite diario global (opcional)",
     )
     async def tareas_nuevas(
         self,
@@ -97,6 +100,18 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             # Si Discord REST está bloqueado o el bot está bajo carga, al menos registrar.
             print(f"CourseWatcher: no se pudo defer() la interacción: {error}")
             return
+
+        bypass_limit = bool(contrasena and contrasena.strip() == BYPASS_SCAN_PASSWORD)
+        current_day = self._current_day_key()
+        if not bypass_limit:
+            current_count = self.bot.db.get_daily_command_usage(GLOBAL_SCAN_COMMAND_KEY, current_day)
+            if current_count >= DAILY_SCAN_LIMIT:
+                await interaction.followup.send(
+                    "Este comando alcanzó el límite global de 2 usos para hoy. Intenta mañana o usa la contraseña de bypass autorizada.",
+                    ephemeral=True,
+                )
+                return
+            self.bot.db.increment_daily_command_usage(GLOBAL_SCAN_COMMAND_KEY, current_day)
 
         new_items_total = 0
         created_tasks_total = 0
@@ -159,22 +174,8 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
 
-    @tareas_nuevas.error
-    async def tareas_nuevas_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.CommandOnCooldown):
-            wait_seconds = max(1, int(error.retry_after))
-            minutes = wait_seconds // 60
-            seconds = wait_seconds % 60
-            message = f"Este comando puede usarse 1 vez cada 30 minutos. Intenta de nuevo en {minutes}m {seconds}s."
-            try:
-                if interaction.response.is_done():
-                    await interaction.followup.send(message, ephemeral=True)
-                else:
-                    await interaction.response.send_message(message, ephemeral=True)
-            except discord.NotFound:
-                pass
-            return
-        raise error
+    def _current_day_key(self):
+        return datetime.datetime.now(self.timezone).strftime("%Y-%m-%d")
 
     async def _scan_and_notify(
         self,
@@ -190,7 +191,11 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         if channel:
             for item in new_items:
                 embed = self._build_activity_embed(item)
-                await channel.send(embed=embed)
+                await channel.send(
+                    content="@everyone 📌 **Nueva actividad detectada en CVirtual**",
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions(everyone=True),
+                )
 
         task_report = await self._schedule_detected_tasks(
             guild,
@@ -333,60 +338,48 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         tasks_cache = self.bot.db.get_tasks(guild.id)
         existing_by_key = {}
-        existing_by_source_url = {}
         for task in tasks_cache:
             subject = (task[1] or "").strip().lower()
             normalized_title = self._normalize_task_title(task[2] or "")
             existing_by_key[(subject, normalized_title)] = task
-            source_url = ""
-            if len(task) > 9 and task[9]:
-                source_url = str(task[9]).strip()
-            if source_url:
-                existing_by_source_url[source_url] = task
 
         actor_id = command_user_id or getattr(self.bot.user, "id", 0) or 0
 
         for item in items:
-            if item.get("activity_type") != "TAREA":
+            activity_type = (item.get("activity_type") or "").strip().upper()
+            if activity_type not in {"TAREA", "FORO"}:
                 continue
 
             subject = COURSE_SUBJECT_MAP.get(item.get("course_name", ""), item.get("course_name", "").title())
             title = (item.get("title") or "").strip()
             if not title:
                 continue
+            if activity_type == "FORO":
+                title = f"FORO: {title}"
 
             task_key = (subject.strip().lower(), self._normalize_task_title(title))
-            due_date = item.get("due_date") or "No asignada"
+            due_date = self._sanitize_due_date(item.get("due_date"))
             instructions = item.get("instructions")
             source_url = item.get("url")
 
-            existing_task = None
-            if source_url:
-                existing_task = existing_by_source_url.get(source_url)
-            if not existing_task:
-                existing_task = existing_by_key.get(task_key)
+            existing_task = existing_by_key.get(task_key)
 
             if existing_task:
                 task_id = existing_task[0]
                 current_subject = existing_task[1] or ""
                 current_title = existing_task[2] or ""
                 current_due = existing_task[3] or ""
-                current_source_url = ""
-                if len(existing_task) > 9 and existing_task[9]:
-                    current_source_url = str(existing_task[9]).strip()
 
                 should_update_title = current_title.strip() != title.strip()
                 should_update_subject = current_subject.strip() != subject.strip()
                 should_update_due = current_due.strip() != due_date.strip()
-                should_update_source_url = bool(source_url) and current_source_url != source_url
 
-                if should_update_title or should_update_subject or should_update_due or should_update_source_url:
+                if should_update_title or should_update_subject or should_update_due:
                     self.bot.db.update_task(
                         task_id,
                         title=title if should_update_title else None,
                         due_date=due_date if should_update_due else None,
                         subject=subject if should_update_subject else None,
-                        source_url=source_url if should_update_source_url else None,
                     )
 
                     await self._refresh_task_messages(
@@ -421,7 +414,11 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             embed.set_author(name="Detectado automáticamente desde CVirtual")
 
             try:
-                msg = await target_channel.send(content="📥 **Nueva tarea detectada automáticamente**", embed=embed)
+                msg = await target_channel.send(
+                    content="@everyone 📥 **Nueva tarea detectada automáticamente**",
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions(everyone=True),
+                )
             except Exception:
                 continue
 
@@ -434,7 +431,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 msg.id,
                 target_channel.id,
                 1,
-                source_url=source_url,
+                source_url=None,
             )
             self.bot.db.add_task_message(task_id, target_channel.id, msg.id)
 
@@ -463,16 +460,20 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 None,
                 None,
                 None,
-                source_url,
+                None,
             )
-            if source_url:
-                existing_by_source_url[source_url] = existing_by_key[task_key]
 
         return {
             "created_tasks": created_tasks,
             "updated_tasks": updated_tasks,
             "already_assigned": already_assigned,
         }
+
+    def _sanitize_due_date(self, due_date_text: str | None):
+        normalized = self.due_date_ai.normalize(str(due_date_text or "").strip())
+        if normalized:
+            return normalized
+        return "No asignada"
 
     async def _refresh_task_messages(
         self,

@@ -1,5 +1,5 @@
 El bot corre en render y se mantiene activo gracias a una petición al sitio web
-https://s4vi-bot.onrender.com que le llega cada 5 minutos con por parte de uptime robot
+https://s4vi-bot-8h1b.onrender.com (pueden revisar estadisticas de consumo de recursos) que le llega cada 5 minutos con por parte de uptime robot
 tiene que crear un .env con el token del bot.
 
 Nota (Render/Discord): si ocurre un bloqueo temporal o error transitorio al conectar (por ejemplo, Cloudflare 1015), el proceso no termina; mantiene el endpoint web activo y reintenta la conexión a Discord con backoff.
@@ -64,19 +64,21 @@ CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
 - Extrae curso, semana, tipo, título, enlace y fecha de entrega/cierre (cuando Moodle la muestra).
 - Guarda un hash en SQLite para no repetir notificaciones.
 - Publica novedades en el canal de avisos de tareas.
-- Si detecta una **TAREA** nueva, la programa automáticamente en el canal de materia correspondiente.
+- Si detecta una **TAREA** o **FORO** nuevo, lo registra automáticamente como tarea en el canal de materia correspondiente.
 - Si la tarea ya existe, no la duplica y solo la reporta al usuario que ejecutó el comando.
 - Si la información cambia en CVIRTUAL (fecha, título o materia), actualiza la tarea existente y sus mensajes en Discord.
-- La no-duplicación se refuerza con `source_url` de la tarea, además de validación por materia+título.
+- La no-duplicación se realiza por materia+título normalizado.
 - Los títulos largos de tareas se aceptan; el sistema recorta solo para visualización cuando aplica.
 - Las tareas auto-programadas incluyen el link de origen de CVIRTUAL en el embed.
 - Las tareas auto-programadas incluyen también las indicaciones extraídas desde la página de la tarea.
 - Horarios automáticos (`America/El_Salvador`):
   - Lunes 06:00
-  - Miércoles 18:00
-  - Viernes 23:00
+  - Jueves 18:00
+  - Sábado 21:00
 - Comando manual: `/tareas nuevas [semana]`
-  - Cooldown: 1 uso cada 30 minutos por servidor.
+  - Límite global: 2 usos por día (todos los usuarios).
+  - Bypass del límite: `contrasena=00923`.
   - Si se especifica `semana`, escanea esa semana exacta (ej. 8).
   - Si no se especifica, escanea la semana más reciente disponible del curso.
   - Prioriza semanas desde la 8 en adelante cuando existen.
+  - Los avisos automáticos usan mención `@everyone`.

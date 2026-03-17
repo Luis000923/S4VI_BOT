@@ -85,6 +85,16 @@ class DatabaseHandler:
                 )
             ''')
 
+            # Contador diario global para comandos sensibles (rate limiting persistente)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS daily_command_usage (
+                    command_key TEXT NOT NULL,
+                    usage_day TEXT NOT NULL,
+                    usage_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (command_key, usage_day)
+                )
+            ''')
+
             # Migración: Agregar columna reminders_active si no existe
             try:
                 cursor.execute('ALTER TABLE tasks ADD COLUMN reminders_active INTEGER DEFAULT 1')
@@ -103,6 +113,7 @@ class DatabaseHandler:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_enrollments_guild_user ON enrollments (guild_id, user_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_deliveries_guild_task_user ON deliveries (guild_id, task_id, user_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_course_watch_items_guild ON course_watch_items (guild_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_daily_command_usage_day ON daily_command_usage (usage_day)')
             
             conn.commit()
 
@@ -314,3 +325,29 @@ class DatabaseHandler:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    # Obtener el uso diario de un comando global
+    def get_daily_command_usage(self, command_key, usage_day):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT usage_count FROM daily_command_usage WHERE command_key = ? AND usage_day = ?',
+                (command_key, usage_day),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+
+    # Incrementar el contador diario de un comando global
+    def increment_daily_command_usage(self, command_key, usage_day):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO daily_command_usage (command_key, usage_day, usage_count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(command_key, usage_day)
+                DO UPDATE SET usage_count = usage_count + 1
+                ''',
+                (command_key, usage_day),
+            )
+            conn.commit()

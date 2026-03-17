@@ -6,19 +6,19 @@
 
 ## Objetivo
 Forzar escaneo de CVirtual para detectar actividades nuevas de tipo foro y tarea.
-Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y programarlas automáticamente en el canal de la materia.
+Además, tanto foros como tareas se registran como tareas internas del bot para seguimiento en Discord.
 
 ## Parámetros
 - `semana` (opcional, entero 1..60):
   - Si se define, el escaneo se concentra en esa semana.
   - Si no se define, usa la semana más reciente disponible (priorizando semana >= 8).
 - `contrasena` (opcional, texto):
-  - Si envías `00923`, se omite el cooldown de 30 minutos para esa ejecución.
-  - Si no se envía o es incorrecta, aplica cooldown normal.
+  - Si envías `00923`, se omite el límite global diario para esa ejecución.
+  - Si no se envía o es incorrecta, aplica el límite diario global.
 
 ## Límite de uso
-- El comando tiene cooldown de **1 uso cada 30 minutos** (por servidor).
-- Excepción: si `contrasena=00923`, el comando se ejecuta sin cooldown.
+- El comando tiene límite global de **2 usos por día** para todos los usuarios.
+- Excepción: si `contrasena=00923`, el comando se ejecuta sin consumir ni bloquear por ese límite.
 
 ## Flujo interno
 1. Difiriere respuesta efímera.
@@ -34,13 +34,15 @@ Además, para actividades de tipo tarea, intenta leer fecha de entrega/cierre y 
    - deduplica por hash en DB,
    - publica embebidos en canal de avisos.
 5. Programa tareas detectadas en el canal correspondiente de materia si no existen aún.
-6. Incluye el link de origen de CVirtual en el embed de la tarea programada.
-7. Extrae también las indicaciones desde la vista de la tarea (bloque de introducción/descripcion) y las incluye en el embed.
-8. Si la tarea ya estaba asignada, no la duplica y solo la reporta al usuario que ejecutó el comando.
-9. Si CVIRTUAL actualiza datos de una tarea existente (fecha/título/materia), el bot actualiza esa tarea y edita sus mensajes publicados.
-10. Para evitar duplicados, prioriza coincidencia por `source_url` de la tarea y usa materia+título como respaldo.
-11. Si el título es muy largo, lo recorta solo para visualización y conserva el original en DB.
-12. Responde con resumen de actividades nuevas, tareas programadas, tareas actualizadas y tareas ya asignadas.
+6. Registra FOROS y TAREAS como tareas en Discord (el foro se guarda con prefijo `FORO:`).
+7. Incluye el link de origen de CVirtual en el embed de la tarea programada.
+8. Extrae también las indicaciones desde la vista de la tarea (bloque de introducción/descripcion) y las incluye en el embed.
+9. Si la tarea ya estaba asignada, no la duplica y solo la reporta al usuario que ejecutó el comando.
+10. Si CVIRTUAL actualiza datos de una tarea existente (fecha/título/materia), el bot actualiza esa tarea y edita sus mensajes publicados.
+11. Para evitar duplicados usa materia+título normalizado.
+12. Las publicaciones automáticas incluyen mención `@everyone`.
+13. En base de datos de tareas se guarda información mínima de tarea/materia/fecha de entrega.
+14. Responde con resumen de actividades nuevas, tareas programadas, tareas actualizadas y tareas ya asignadas.
 
 ## ¿Cómo obtiene las tareas de la semana?
 Este es el flujo específico para “traer tareas de una semana”:
