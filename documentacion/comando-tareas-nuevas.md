@@ -42,7 +42,9 @@ Además, tanto foros como tareas se registran como tareas internas del bot para 
 11. Para evitar duplicados usa materia+título normalizado.
 12. Las publicaciones automáticas incluyen mención `@everyone`.
 13. En base de datos de tareas se guarda información mínima de tarea/materia/fecha de entrega.
-14. Responde con resumen de actividades nuevas, tareas programadas, tareas actualizadas y tareas ya asignadas.
+14. Cada envío automático a canal se realiza con un intervalo de 30 segundos por canal para evitar ráfagas.
+15. El embed de avisos y de tareas usa el mismo formato detallado tipo tarea (Título, Materia, Entrega, Fuente e Indicaciones cuando existan).
+16. Responde con resumen de actividades nuevas, tareas programadas, tareas actualizadas y tareas ya asignadas.
 
 ## ¿Cómo obtiene las tareas de la semana?
 Este es el flujo específico para “traer tareas de una semana”:
@@ -75,6 +77,7 @@ Este es el flujo específico para “traer tareas de una semana”:
 8. **Publica y programa**:
   - Publica actividad nueva en canal de avisos.
   - Para tareas, crea o actualiza mensajes en el canal de materia y en `fechas-de-entrega`.
+  - Respeta un delay de 30 segundos entre publicaciones automáticas por canal.
 
 En resumen: el bot no “adivina” la semana por la portada del curso; primero resuelve la semana objetivo y luego escanea su sección específica para obtener tareas con mayor precisión.
 

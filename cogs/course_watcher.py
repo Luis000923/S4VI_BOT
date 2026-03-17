@@ -54,6 +54,8 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         self.timezone = ZoneInfo(TIMEZONE_NAME)
         self.due_date_ai = DueDateAI(default_hour=12, default_minute=0)
         self.last_slot_processed = None
+        self.message_interval_seconds = 30
+        self.last_channel_message_at = {}
         self.scan_courses_task.start()
 
     def cog_unload(self):
@@ -191,7 +193,8 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         if channel:
             for item in new_items:
                 embed = self._build_activity_embed(item)
-                await channel.send(
+                await self._send_with_channel_delay(
+                    channel,
                     content="@everyone 📌 **Nueva actividad detectada en CVirtual**",
                     embed=embed,
                     allowed_mentions=discord.AllowedMentions(everyone=True),
@@ -414,7 +417,8 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             embed.set_author(name="Detectado automáticamente desde CVirtual")
 
             try:
-                msg = await target_channel.send(
+                msg = await self._send_with_channel_delay(
+                    target_channel,
                     content="@everyone 📥 **Nueva tarea detectada automáticamente**",
                     embed=embed,
                     allowed_mentions=discord.AllowedMentions(everyone=True),
@@ -444,7 +448,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             dates_channel = resolve_channel("fechas-de-entrega")
             if dates_channel:
                 try:
-                    date_msg = await dates_channel.send(embed=embed)
+                    date_msg = await self._send_with_channel_delay(dates_channel, embed=embed)
                     self.bot.db.add_task_message(task_id, dates_channel.id, date_msg.id)
                 except Exception:
                     pass
@@ -468,6 +472,24 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             "updated_tasks": updated_tasks,
             "already_assigned": already_assigned,
         }
+
+    async def _send_with_channel_delay(self, channel: discord.abc.Messageable, **kwargs):
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            last_sent = self.last_channel_message_at.get(channel_id)
+            if last_sent is not None:
+                elapsed = (now - last_sent).total_seconds()
+                wait_seconds = self.message_interval_seconds - elapsed
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
+
+        message = await channel.send(**kwargs)
+
+        if channel_id is not None:
+            self.last_channel_message_at[channel_id] = datetime.datetime.now(datetime.timezone.utc)
+
+        return message
 
     def _sanitize_due_date(self, due_date_text: str | None):
         normalized = self.due_date_ai.normalize(str(due_date_text or "").strip())
@@ -1047,14 +1069,22 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         return None
 
     def _build_activity_embed(self, item: dict) -> discord.Embed:
-        color = 0xF1C40F if item["activity_type"] == "FORO" else 0x3498DB
-        embed = discord.Embed(title="📌 Nueva actividad detectada", color=color)
-        embed.add_field(name="Curso", value=item["course_name"], inline=False)
-        embed.add_field(name="Semana", value=item["week_name"], inline=True)
-        embed.add_field(name="Tipo", value=item["activity_type"], inline=True)
-        embed.add_field(name="Título", value=item["title"][:1024], inline=False)
-        embed.add_field(name="Link", value=item["url"], inline=False)
-        embed.set_footer(text="Monitor académico S4VI_BOT")
+        activity_type = (item.get("activity_type") or "").strip().upper()
+        subject = COURSE_SUBJECT_MAP.get(item.get("course_name", ""), item.get("course_name", "").title())
+        title = (item.get("title") or "Actividad sin título").strip()
+        if activity_type == "FORO":
+            title = f"FORO: {title}"
+
+        due_date = self._sanitize_due_date(item.get("due_date"))
+        embed = create_task_embed(
+            title,
+            subject,
+            due_date,
+            source_url=item.get("url"),
+            instructions=item.get("instructions"),
+        )
+        embed.title = "📌 Nueva actividad detectada"
+        embed.set_author(name="Detectado automáticamente desde CVirtual")
         return embed
 
 

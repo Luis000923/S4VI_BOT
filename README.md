@@ -71,6 +71,8 @@ CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
 - Los títulos largos de tareas se aceptan; el sistema recorta solo para visualización cuando aplica.
 - Las tareas auto-programadas incluyen el link de origen de CVIRTUAL en el embed.
 - Las tareas auto-programadas incluyen también las indicaciones extraídas desde la página de la tarea.
+- Los avisos de actividad y las tareas usan formato detallado consistente (Título, Materia, Entrega, Fuente, Indicaciones cuando existan).
+- Cada publicación automática por canal se envía con intervalo de 30 segundos para evitar ráfagas.
 - Horarios automáticos (`America/El_Salvador`):
   - Lunes 06:00
   - Jueves 18:00
