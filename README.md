@@ -21,6 +21,17 @@ Notas de optimización del endpoint:
 - Se usa caché corta de métricas para reducir lecturas frecuentes de sistema.
 - Se ejecuta limpieza segura periódica de artefactos temporales de Python (`__pycache__`, `*.pyc`, `*.pyo`) fuera de `.venv` y `.git`.
 
+La ruta `/health` devuelve salud interna del keep-alive:
+- `estado`: estado general del servicio web.
+- `heartbeat_age_seconds`: segundos desde el último heartbeat interno.
+- `cleanup`: resumen de la última limpieza periódica.
+
+Estabilidad adicional del bot:
+- Logging estructurado en arranque, reconexión de Discord, loops programados y errores globales.
+- Handler global para excepciones no controladas (`sys.excepthook` y loop `asyncio`).
+- Watchdog interno (`cogs/stability.py`) que verifica y reinicia loops críticos (`CourseWatcher` y `Reminders`) si se detienen.
+- Reintentos con backoff exponencial + jitter en solicitudes HTTP a CVirtual para mitigar fallos transitorios/rate limits.
+
 EJEMPLO DE .env
 #api del bot del discord
 DISCORD_TOKEN=TOKEN_DEL_BOT
@@ -28,6 +39,8 @@ DISCORD_TOKEN=TOKEN_DEL_BOT
 GUILD_ID=ID_DEL_SERVIDOR
 #nivel de logs (opcional): DEBUG, INFO, WARNING, ERROR
 LOG_LEVEL=INFO
+# intervalo del heartbeat interno de keep_alive (mínimo 10s)
+KEEP_ALIVE_HEARTBEAT_SECONDS=30
 #contraseña de bypass para /tareas nuevas (opcional)
 TAREAS_NUEVAS_BYPASS_PASSWORD=00923
 #usuario y contraseña para acceder a CVIRTUAL
@@ -57,7 +70,17 @@ CVIRTUAL_PASSWORD=CLAVE_CVIRTUAL
 - `keep_alive.py`: Servidor web para uptime.
 - `.env`: Variables de entorno.
 - `requirements.txt`: Dependencias del proyecto.
+- `requirements-dev.txt`: Dependencias para pruebas automatizadas.
 - `estructura-discord.md`: Guía de la estructura del servidor.
+
+## TESTING
+- Ejecutar pruebas: `python -m pytest -q`
+- Archivo de configuración de pytest: `tests/pytest.ini`
+- Cobertura actual incluida:
+  - utilidades (`config`, `date_ai`)
+  - base de datos (`db_handler`)
+  - endpoint de salud/monitoreo (`keep_alive`)
+  - reintentos HTTP con backoff (`course_watcher`)
 
 ## MONITOREO DE CURSOS (NUEVO)
 - El cog `course_watcher.py` revisa cursos de CVIRTUAL y detecta actividades de tipo **Foro** y **Tarea**.

@@ -6,6 +6,10 @@ from utils.config import SUBJECTS, ROLES, find_channel, SUBJECTS_MAP
 from utils.date_ai import DueDateAI
 from utils.embeds import create_task_embed, create_success_embed
 import datetime
+import logging
+
+
+logger = logging.getLogger("s4vi.tasks")
 
 class Tasks(commands.Cog):
     def __init__(self, bot):
@@ -91,7 +95,7 @@ class Tasks(commands.Cog):
         except discord.errors.InteractionResponded:
             pass # Ya fue respondida por otra instancia o proceso
         except discord.errors.NotFound:
-            print("Error: La interacción expiró antes de poder diferir.")
+            logger.warning("La interacción expiró antes de poder diferir en /crear-tarea")
             return
 
         internal_subject = SUBJECTS_MAP.get(materia, materia)
@@ -131,8 +135,8 @@ class Tasks(commands.Cog):
             try:
                 date_msg = await dates_channel.send(embed=embed)
                 self.bot.db.add_task_message(task_id, dates_channel.id, date_msg.id)
-            except:
-                pass
+            except Exception:
+                logger.exception("No se pudo notificar tarea %s en canal de fechas", task_id)
 
     @tarea_crear.autocomplete('materia')
     async def materia_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -188,7 +192,7 @@ class Tasks(commands.Cog):
         try:
             # Intentar capturar el ID de formatos como "123: Título" o solo "123"
             task_id = int(tarea.split(":")[0])
-        except:
+        except Exception:
             await interaction.response.send_message("Formato de ID inválido.", ephemeral=True)
             return
 
@@ -219,7 +223,8 @@ class Tasks(commands.Cog):
         # Diferir después de validaciones
         try:
             await interaction.response.defer(ephemeral=True)
-        except:
+        except Exception:
+            logger.warning("No se pudo defer en /editar-tarea para task=%s", tarea)
             return
 
         # Actualizar registros en la base de datos
@@ -239,8 +244,8 @@ class Tasks(commands.Cog):
                     new_embed.set_author(name=msg.embeds[0].author.name if msg.embeds else "S4VI Bot")
                     new_embed.set_footer(text=f"ID: {task_id} | Estado: Pendiente")
                     await msg.edit(embed=new_embed)
-            except:
-                pass
+            except Exception:
+                logger.exception("No se pudo actualizar mensaje principal de tarea %s", task_id)
 
         await interaction.followup.send(embed=create_success_embed(f"Tarea #{task_id} actualizada correctamente."), ephemeral=True)
 
@@ -280,7 +285,7 @@ class Tasks(commands.Cog):
                             msg = await channel.fetch_message(msg_id)
                             await msg.delete()
                     except Exception as e:
-                        print(f"Error al eliminar mensaje {msg_id} en canal {chan_id}: {e}")
+                        logger.warning("Error al eliminar mensaje %s en canal %s: %s", msg_id, chan_id, e)
 
                 self.bot.db.delete_task(task_id)
                 deleted_tasks += 1
@@ -298,7 +303,7 @@ class Tasks(commands.Cog):
 
         try:
             task_id = int(tarea.split(":")[0])
-        except:
+        except Exception:
             await interaction.response.send_message("Formato de ID inválido.", ephemeral=True)
             return
 
@@ -318,7 +323,7 @@ class Tasks(commands.Cog):
                     msg = await channel.fetch_message(msg_id)
                     await msg.delete()
             except Exception as e:
-                print(f"Error al eliminar mensaje {msg_id} en canal {chan_id}: {e}")
+                logger.warning("Error al eliminar mensaje %s en canal %s: %s", msg_id, chan_id, e)
 
         self.bot.db.delete_task(task_id)
         await interaction.followup.send(embed=create_success_embed(f"Tarea #{task_id} y su mensaje asociado han sido eliminados."), ephemeral=True)

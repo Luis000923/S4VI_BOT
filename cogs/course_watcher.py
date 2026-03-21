@@ -3,6 +3,8 @@ import datetime
 import hashlib
 import os
 import re
+import random
+import logging
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
@@ -36,6 +38,7 @@ SCHEDULE_SLOTS = {
 TIMEZONE_NAME = "America/El_Salvador"
 DAILY_SCAN_LIMIT = 2
 GLOBAL_SCAN_COMMAND_KEY = "tareas_nuevas_global"
+MAX_TRACKED_CHANNEL_TIMESTAMPS = 2000
 
 WEEK_REGEX = re.compile(r"semana\s*\d+", re.IGNORECASE)
 MIN_WEEK_TO_SCAN = 8
@@ -48,6 +51,10 @@ COURSE_SUBJECT_MAP = {
     "MATEMATICA": "Matemática",
     "SEGURIDAD DE LA INFORMACION": "Ciberseguridad",
 }
+
+logger = logging.getLogger("s4vi.course_watcher")
+
+
 class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="Escaneo de cursos virtuales"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -56,34 +63,44 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         self.last_slot_processed = None
         self.message_interval_seconds = 30
         self.last_channel_message_at = {}
-        self.scan_courses_task.start()
+        self.scan_lock = asyncio.Lock()
+        if not self.scan_courses_task.is_running():
+            self.scan_courses_task.start()
 
     def cog_unload(self):
         self.scan_courses_task.cancel()
 
     @tasks.loop(minutes=1)
     async def scan_courses_task(self):
-        now = datetime.datetime.now(self.timezone).replace(second=0, microsecond=0)
-        slot = (now.weekday(), now.hour, now.minute)
+        try:
+            now = datetime.datetime.now(self.timezone).replace(second=0, microsecond=0)
+            slot = (now.weekday(), now.hour, now.minute)
 
-        if slot not in SCHEDULE_SLOTS:
-            return
+            if slot not in SCHEDULE_SLOTS:
+                return
 
-        slot_key = now.strftime("%Y-%m-%d %H:%M")
-        if slot_key == self.last_slot_processed:
-            return
+            slot_key = now.strftime("%Y-%m-%d %H:%M")
+            if slot_key == self.last_slot_processed:
+                return
 
-        self.last_slot_processed = slot_key
+            self.last_slot_processed = slot_key
+            logger.info("Iniciando escaneo automático en slot %s", slot_key)
 
-        for guild in self.bot.guilds:
-            try:
-                await self._scan_and_notify(guild)
-            except Exception as error:
-                print(f"CourseWatcher: error en escaneo automático para guild {guild.id}: {error}")
+            for guild in self.bot.guilds:
+                try:
+                    await self._scan_and_notify(guild)
+                except Exception:
+                    logger.exception("Error en escaneo automático para guild %s", guild.id)
+        except Exception:
+            logger.exception("Fallo no controlado en scan_courses_task")
 
     @scan_courses_task.before_loop
     async def before_scan_courses_task(self):
         await self.bot.wait_until_ready()
+
+    @scan_courses_task.error
+    async def scan_courses_task_error(self, error: Exception):
+        logger.exception("scan_courses_task se detuvo por error: %s", error)
 
     @app_commands.command(name="nuevas", description="Forzar escaneo de cursos y detectar nuevos foros/tareas")
     @app_commands.describe(
@@ -100,7 +117,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
             await interaction.response.defer(ephemeral=True)
         except Exception as error:
             # Si Discord REST está bloqueado o el bot está bajo carga, al menos registrar.
-            print(f"CourseWatcher: no se pudo defer() la interacción: {error}")
+            logger.warning("No se pudo defer() la interacción en /tareas nuevas: %s", error)
             return
 
         bypass_limit = bool(contrasena and contrasena.strip() == BYPASS_SCAN_PASSWORD)
@@ -185,42 +202,43 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         requested_week: int | None = None,
         command_user_id: int | None = None,
     ) -> dict:
-        channel = self._resolve_updates_channel(guild)
-        scan_result = await self._scan_courses_for_guild(guild.id, requested_week=requested_week)
-        new_items = scan_result["new_items"]
-        detected_items = scan_result["detected_items"]
+        async with self.scan_lock:
+            channel = self._resolve_updates_channel(guild)
+            scan_result = await self._scan_courses_for_guild(guild.id, requested_week=requested_week)
+            new_items = scan_result["new_items"]
+            detected_items = scan_result["detected_items"]
 
-        if channel:
-            for item in new_items:
-                embed = self._build_activity_embed(item)
-                await self._send_with_channel_delay(
-                    channel,
-                    content="@everyone 📌 **Nueva actividad detectada en CVirtual**",
-                    embed=embed,
-                    allowed_mentions=discord.AllowedMentions(everyone=True),
-                )
+            if channel:
+                for item in new_items:
+                    embed = self._build_activity_embed(item)
+                    await self._send_with_channel_delay(
+                        channel,
+                        content="@everyone 📌 **Nueva actividad detectada en CVirtual**",
+                        embed=embed,
+                        allowed_mentions=discord.AllowedMentions(everyone=True),
+                    )
 
-        task_report = await self._schedule_detected_tasks(
-            guild,
-            detected_items,
-            command_user_id=command_user_id,
-        )
+            task_report = await self._schedule_detected_tasks(
+                guild,
+                detected_items,
+                command_user_id=command_user_id,
+            )
 
-        return {
-            "new_activities": len(new_items),
-            "created_tasks": task_report["created_tasks"],
-            "updated_tasks": task_report.get("updated_tasks", 0),
-            "auth_failed": bool(scan_result.get("auth_failed")),
-            "already_assigned": task_report["already_assigned"],
-            "blocked": bool(scan_result.get("blocked")),
-        }
+            return {
+                "new_activities": len(new_items),
+                "created_tasks": task_report["created_tasks"],
+                "updated_tasks": task_report.get("updated_tasks", 0),
+                "auth_failed": bool(scan_result.get("auth_failed")),
+                "already_assigned": task_report["already_assigned"],
+                "blocked": bool(scan_result.get("blocked")),
+            }
 
     async def _scan_courses_for_guild(self, guild_id: int, requested_week: int | None = None):
         new_items = []
         detected_items = []
         scan_blocked = False
 
-        timeout = aiohttp.ClientTimeout(total=30)
+        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=25)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             authenticated, use_manual_cookie_for_scan = await self._authenticate_session(session)
             if not authenticated:
@@ -435,7 +453,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 msg.id,
                 target_channel.id,
                 1,
-                source_url=None,
+                source_url=source_url,
             )
             self.bot.db.add_task_message(task_id, target_channel.id, msg.id)
 
@@ -488,6 +506,12 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
 
         if channel_id is not None:
             self.last_channel_message_at[channel_id] = datetime.datetime.now(datetime.timezone.utc)
+            if len(self.last_channel_message_at) > MAX_TRACKED_CHANNEL_TIMESTAMPS:
+                oldest_channel_id = min(
+                    self.last_channel_message_at,
+                    key=self.last_channel_message_at.get,
+                )
+                self.last_channel_message_at.pop(oldest_channel_id, None)
 
         return message
 
@@ -660,15 +684,17 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         if username and password:
             try:
                 request_kwargs = self._cookie_request_kwargs(use_manual_cookie=False)
-                async with session.get(MOODLE_LOGIN_URL, **request_kwargs) as response:
-                    if response.status != 200:
-                        print(f"CourseWatcher: status {response.status} al obtener login page")
-                        return False, False
-                    login_html = await response.text()
-
-                    if self._is_cloudflare_or_error_page(login_html):
-                        print("CourseWatcher: respuesta bloqueada o error (posible Cloudflare)")
-                        return False, False
+                login_response = await self._request_text_with_retry(
+                    session,
+                    "GET",
+                    MOODLE_LOGIN_URL,
+                    use_manual_cookie=False,
+                    **request_kwargs,
+                )
+                if not login_response["ok"]:
+                    logger.warning("No se pudo obtener login page: %s", login_response["reason"])
+                    return False, False
+                login_html = login_response["text"]
 
                 token = self._extract_login_token(login_html)
                 payload = {
@@ -681,30 +707,35 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                 post_kwargs = self._cookie_request_kwargs(use_manual_cookie=False)
                 post_kwargs["data"] = payload
 
-                async with session.post(MOODLE_LOGIN_URL, **post_kwargs) as response:
-                    final_url = str(response.url)
-                    html = await response.text()
-
-                    if self._is_cloudflare_or_error_page(html):
-                        print("CourseWatcher: respuesta post bloqueada o error")
-                        return False, False
+                post_response = await self._request_text_with_retry(
+                    session,
+                    "POST",
+                    MOODLE_LOGIN_URL,
+                    use_manual_cookie=False,
+                    **post_kwargs,
+                )
+                if not post_response["ok"]:
+                    logger.warning("Login POST fallido: %s", post_response["reason"])
+                    return False, False
+                final_url = post_response["final_url"]
+                html = post_response["text"]
 
                 if "login/index.php" in final_url and "invalidlogin" in html.lower():
-                    print("CourseWatcher: credenciales Moodle inválidas.")
+                    logger.warning("Credenciales Moodle inválidas")
                 else:
                     session_ok = await self._verify_authenticated_session(session, use_manual_cookie=False)
                     if session_ok:
                         return True, False
-                    print("CourseWatcher: login por credenciales no completado; intentando con CVIRTUAL_COOKIE")
-            except Exception as error:
-                print(f"CourseWatcher: error autenticando en Moodle con credenciales: {error}")
+                    logger.warning("Login por credenciales no completado; intentando con CVIRTUAL_COOKIE")
+            except Exception:
+                logger.exception("Error autenticando en Moodle con credenciales")
 
         if cookie_header:
             cookie_ok = await self._verify_authenticated_session(session, use_manual_cookie=True)
             if cookie_ok:
-                print("CourseWatcher: sesión autenticada usando CVIRTUAL_COOKIE")
+                logger.info("Sesión autenticada usando CVIRTUAL_COOKIE")
                 return True, True
-            print("CourseWatcher: CVIRTUAL_COOKIE no válida o expirada")
+            logger.warning("CVIRTUAL_COOKIE no válida o expirada")
 
         return False, False
 
@@ -714,30 +745,103 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         url: str,
         use_manual_cookie: bool = True,
     ) -> tuple[str, bool]:
-        try:
-            request_kwargs = self._cookie_request_kwargs(use_manual_cookie=use_manual_cookie)
+        request_kwargs = self._cookie_request_kwargs(use_manual_cookie=use_manual_cookie)
+        response_data = await self._request_text_with_retry(
+            session,
+            "GET",
+            url,
+            use_manual_cookie=use_manual_cookie,
+            **request_kwargs,
+        )
+        if not response_data["ok"]:
+            blocked = response_data.get("blocked", False)
+            logger.warning("No se pudo cargar %s: %s", url, response_data.get("reason"))
+            return "", bool(blocked)
 
-            async with session.get(url, **request_kwargs) as response:
-                if response.status != 200:
-                    print(f"CourseWatcher: status {response.status} en {url}")
-                    return "", False
-
-                final_url = str(response.url)
-                if "login/index.php" in final_url:
-                    print(f"CourseWatcher: redirigido a login al cargar {url}")
-                    return "", False
-                
-                html = await response.text()
-                
-                # Detectar si es página de Cloudflare o error
-                if self._is_cloudflare_or_error_page(html):
-                    print(f"CourseWatcher: página bloqueada/error en {url}")
-                    return "", True
-                
-                return html, False
-        except Exception as error:
-            print(f"CourseWatcher: excepción al cargar {url}: {error}")
+        final_url = response_data["final_url"]
+        if "login/index.php" in final_url:
+            logger.warning("Redirigido a login al cargar %s", url)
             return "", False
+
+        return response_data["text"], False
+
+    async def _request_text_with_retry(
+        self,
+        session: aiohttp.ClientSession,
+        method: str,
+        url: str,
+        use_manual_cookie: bool = True,
+        max_attempts: int = 4,
+        **kwargs,
+    ) -> dict:
+        last_reason = "error-desconocido"
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                request_kwargs = dict(kwargs)
+                if "headers" not in request_kwargs:
+                    request_kwargs.update(self._cookie_request_kwargs(use_manual_cookie=use_manual_cookie))
+
+                async with session.request(method.upper(), url, **request_kwargs) as response:
+                    status = response.status
+                    final_url = str(response.url)
+                    text = await response.text()
+
+                    if self._is_cloudflare_or_error_page(text):
+                        last_reason = "cloudflare-bloqueo"
+                        if attempt < max_attempts:
+                            await self._sleep_backoff(attempt)
+                            continue
+                        return {
+                            "ok": False,
+                            "blocked": True,
+                            "reason": last_reason,
+                            "status": status,
+                        }
+
+                    if status == 200:
+                        return {
+                            "ok": True,
+                            "text": text,
+                            "status": status,
+                            "final_url": final_url,
+                        }
+
+                    retryable = status in {403, 408, 425, 429, 500, 502, 503, 504}
+                    last_reason = f"status-{status}"
+                    if retryable and attempt < max_attempts:
+                        await self._sleep_backoff(attempt)
+                        continue
+
+                    return {
+                        "ok": False,
+                        "blocked": status in {403, 429},
+                        "reason": last_reason,
+                        "status": status,
+                    }
+            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+                last_reason = f"{type(error).__name__}"
+                if attempt < max_attempts:
+                    await self._sleep_backoff(attempt)
+                    continue
+            except Exception as error:
+                last_reason = f"{type(error).__name__}"
+                logger.exception("Error inesperado en request %s %s", method, url)
+                if attempt < max_attempts:
+                    await self._sleep_backoff(attempt)
+                    continue
+
+        return {
+            "ok": False,
+            "blocked": False,
+            "reason": last_reason,
+            "status": None,
+        }
+
+    async def _sleep_backoff(self, attempt: int):
+        delay_base = min(20.0, 2 ** max(0, attempt - 1))
+        jitter = random.uniform(0, delay_base * 0.25)
+        await asyncio.sleep(delay_base + jitter)
     
     def _is_cloudflare_or_error_page(self, html: str) -> bool:
         """Detecta si la respuesta es una página de error/bloqueo de Cloudflare"""
@@ -770,6 +874,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                         continue
                     return True
             except Exception:
+                logger.exception("Error verificando sesión autenticada en %s", url)
                 continue
 
         return False

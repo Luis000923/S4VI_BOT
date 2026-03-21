@@ -8,7 +8,13 @@ class DatabaseHandler:
         self.init_db()
 
     def get_connection(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=10000")
+        except sqlite3.OperationalError:
+            pass
+        return conn
 
     # Inicializar las tablas de la base de datos si no existen
     def init_db(self):

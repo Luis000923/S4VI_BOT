@@ -94,6 +94,7 @@ def get_subject_channel_name(display_name):
 ROLES = {
     "ADMIN": "admin",
     "DELEGADO": "delegado",
+    "ESTUDIANTE": "estudiantes",
     "ESTUDIANTRE": "estudiantes",
     "DELEGADOS_ESPECIALES": [
         "delegado-mate",

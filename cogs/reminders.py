@@ -4,6 +4,8 @@ from discord.ext import tasks, commands
 from utils.config import find_channel
 from utils.embeds import create_reminder_embed
 import datetime
+import asyncio
+import logging
 
 
 REMINDER_CHECKS = (
@@ -16,7 +18,10 @@ REMINDER_CHECKS = (
 class Reminders(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.check_reminders.start()
+        self.reminders_lock = asyncio.Lock()
+        self.logger = logging.getLogger("s4vi.reminders")
+        if not self.check_reminders.is_running():
+            self.check_reminders.start()
 
     def cog_unload(self):
         self.check_reminders.cancel()
@@ -24,53 +29,65 @@ class Reminders(commands.Cog):
     # Tarea periódica para identificar tareas próximas a vencer
     @tasks.loop(minutes=1)
     async def check_reminders(self):
-        for guild in self.bot.guilds:
-            tasks_list = self.bot.db.get_tasks(guild.id)
-            if not tasks_list:
-                continue
-
-            now = datetime.datetime.now()
-            task_ids = [task[0] for task in tasks_list]
-            sent_reminders = self.bot.db.get_sent_reminders_for_tasks(task_ids)
-            enrollment_snapshot = self.bot.db.get_enrollment_snapshot(guild.id)
-            delivered_pairs = self.bot.db.get_delivered_pairs_for_tasks(guild.id, task_ids)
-            channel_cache = {}
-
-            for task in tasks_list:
-                tid, subject, title, due_date_str = task[0], task[1], task[2], task[3]
-                reminders_active = task[8] if len(task) > 8 else 1
-                
-                if not reminders_active:
-                    continue
-                    
+        async with self.reminders_lock:
+            for guild in self.bot.guilds:
                 try:
-                    due_date = datetime.datetime.strptime(due_date_str, "%d/%m/%Y %H:%M")
-                except ValueError:
-                    # Omitir tareas sin fecha asignada o formatos inválidos
-                    continue
+                    tasks_list = self.bot.db.get_tasks(guild.id)
+                    if not tasks_list:
+                        continue
 
-                diff = due_date - now
-                hours_left = diff.total_seconds() / 3600
+                    now = datetime.datetime.now()
+                    task_ids = [task[0] for task in tasks_list]
+                    sent_reminders = self.bot.db.get_sent_reminders_for_tasks(task_ids)
+                    enrollment_snapshot = self.bot.db.get_enrollment_snapshot(guild.id)
+                    delivered_pairs = self.bot.db.get_delivered_pairs_for_tasks(guild.id, task_ids)
+                    channel_cache = {}
 
-                # Ignorar tareas vencidas
-                if hours_left < -0.5:
-                    continue
+                    for task in tasks_list:
+                        tid, due_date_str = task[0], task[3]
+                        reminders_active = task[8] if len(task) > 8 else 1
 
-                for trigger_hours, r_type in REMINDER_CHECKS:
-                    # Enviar recordatorio si está dentro del umbral y no se ha enviado previamente
-                    if 0 <= hours_left <= trigger_hours and (tid, r_type) not in sent_reminders:
-                        await self.send_reminder(
-                            guild,
-                            task,
-                            r_type,
-                            hours_left,
-                            enrollment_snapshot=enrollment_snapshot,
-                            delivered_pairs=delivered_pairs,
-                            channel_cache=channel_cache,
-                        )
-                        self.bot.db.mark_reminder_sent(tid, r_type)
-                        sent_reminders.add((tid, r_type))
-                        break 
+                        if not reminders_active:
+                            continue
+
+                        try:
+                            due_date = datetime.datetime.strptime(due_date_str, "%d/%m/%Y %H:%M")
+                        except ValueError:
+                            # Omitir tareas sin fecha asignada o formatos inválidos
+                            continue
+
+                        diff = due_date - now
+                        hours_left = diff.total_seconds() / 3600
+
+                        # Ignorar tareas vencidas
+                        if hours_left < -0.5:
+                            continue
+
+                        for trigger_hours, r_type in REMINDER_CHECKS:
+                            # Enviar recordatorio si está dentro del umbral y no se ha enviado previamente
+                            if 0 <= hours_left <= trigger_hours and (tid, r_type) not in sent_reminders:
+                                await self.send_reminder(
+                                    guild,
+                                    task,
+                                    r_type,
+                                    hours_left,
+                                    enrollment_snapshot=enrollment_snapshot,
+                                    delivered_pairs=delivered_pairs,
+                                    channel_cache=channel_cache,
+                                )
+                                self.bot.db.mark_reminder_sent(tid, r_type)
+                                sent_reminders.add((tid, r_type))
+                                break
+                except Exception:
+                    self.logger.exception("Fallo procesando recordatorios para guild %s", guild.id)
+
+    @check_reminders.before_loop
+    async def before_check_reminders(self):
+        await self.bot.wait_until_ready()
+
+    @check_reminders.error
+    async def check_reminders_error(self, error: Exception):
+        self.logger.exception("check_reminders se detuvo por error: %s", error)
 
     # Enviar notificación de recordatorio al canal de la materia
     async def send_reminder(self, guild, task, r_type, hours_left, enrollment_snapshot=None, delivered_pairs=None, channel_cache=None):
@@ -86,7 +103,7 @@ class Reminders(commands.Cog):
                 channel_cache[subject] = channel
         
         if not channel:
-            print(f"Advertencia: No se encontró el canal para el recordatorio de: {subject}")
+            self.logger.warning("No se encontró el canal para recordatorio de %s", subject)
             return
 
         # Formatear el tiempo restante preciso
@@ -105,7 +122,7 @@ class Reminders(commands.Cog):
             if minutes > 0: time_parts.append(f"{minutes}m")
             
             time_text = " ".join(time_parts) if time_parts else "menos de 1 minuto"
-        except:
+        except Exception:
             time_text = f"{int(hours_left)} horas"
 
         embed = create_reminder_embed(title, subject, time_text)
@@ -146,8 +163,8 @@ class Reminders(commands.Cog):
                 mentions = " ".join(chunk)
                 try:
                     await channel.send(content=f"🔔 **Recordatorio** para: {mentions}", embed=embed)
-                except:
-                    pass
+                except Exception:
+                    self.logger.exception("No se pudo enviar recordatorio de tarea %s en guild %s", tid, guild.id)
 
 async def setup(bot):
     await bot.add_cog(Reminders(bot))

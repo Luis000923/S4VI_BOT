@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import time
+import logging
 
 try:
     from waitress import serve as waitress_serve
@@ -24,6 +25,7 @@ except Exception:
     psutil = None
 
 app = Flask('')
+logger = logging.getLogger("s4vi.keep_alive")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
@@ -33,6 +35,7 @@ _last_cleanup_ts = 0.0
 _last_cleanup_summary = {"archivos_eliminados": 0, "carpetas_eliminadas": 0}
 _last_metrics_ts = 0.0
 _last_metrics = None
+_last_heartbeat_ts = 0.0
 EL_SALVADOR_TZ = ZoneInfo("America/El_Salvador") if ZoneInfo is not None else datetime.timezone(datetime.timedelta(hours=-6))
 
 
@@ -210,6 +213,7 @@ def _run_periodic_maintenance():
     # Mantenimiento seguro: solo elimina artefactos temporales de Python.
     _last_cleanup_summary = _cleanup_transient_files()
     _last_cleanup_ts = now
+    logger.info("Mantenimiento keep_alive ejecutado: %s", _last_cleanup_summary)
 
 
 def _collect_metrics():
@@ -235,6 +239,23 @@ def _get_timestamp_fields():
         "actualizado_en_12h": now_sv.strftime("%Y-%m-%d %I:%M:%S %p"),
     }
 
+
+def _heartbeat_worker():
+    global _last_heartbeat_ts
+
+    interval = int(os.getenv("KEEP_ALIVE_HEARTBEAT_SECONDS", "30"))
+    interval = max(10, interval)
+
+    while True:
+        try:
+            _run_periodic_maintenance()
+            _collect_metrics()
+            _last_heartbeat_ts = time.time()
+            logger.info("Heartbeat keep_alive ok")
+        except Exception:
+            logger.exception("Heartbeat keep_alive falló")
+        time.sleep(interval)
+
 @app.route('/')
 def home():
     _run_periodic_maintenance()
@@ -250,6 +271,21 @@ def home():
         }
     )
 
+
+@app.route('/health')
+def health():
+    timestamps = _get_timestamp_fields()
+    now_ts = time.time()
+    heartbeat_age_s = max(0.0, now_ts - _last_heartbeat_ts) if _last_heartbeat_ts else None
+    return jsonify(
+        {
+            "estado": "ok",
+            "actualizado_en": timestamps["actualizado_en"],
+            "heartbeat_age_seconds": heartbeat_age_s,
+            "cleanup": _last_cleanup_summary,
+        }
+    )
+
 def run():
     port = int(os.getenv("PORT", 8080))
     if waitress_serve is not None:
@@ -259,5 +295,7 @@ def run():
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 def keep_alive():
-    t = Thread(target=run, daemon=True)
-    t.start()
+    web_thread = Thread(target=run, daemon=True)
+    heartbeat_thread = Thread(target=_heartbeat_worker, daemon=True)
+    web_thread.start()
+    heartbeat_thread.start()
