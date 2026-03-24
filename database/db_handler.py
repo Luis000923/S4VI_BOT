@@ -117,6 +117,7 @@ class DatabaseHandler:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_tasks_guild_id ON tasks (guild_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_task_messages_task_id ON task_messages (task_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_enrollments_guild_user ON enrollments (guild_id, user_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_enrollments_guild_subject ON enrollments (guild_id, subject)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_deliveries_guild_task_user ON deliveries (guild_id, task_id, user_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_course_watch_items_guild ON course_watch_items (guild_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_daily_command_usage_day ON daily_command_usage (usage_day)')

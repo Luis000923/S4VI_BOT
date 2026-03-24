@@ -52,6 +52,28 @@ COURSE_SUBJECT_MAP = {
     "SEGURIDAD DE LA INFORMACION": "Ciberseguridad",
 }
 
+# Cabeceras HTTP que imitan un navegador real para evitar bloqueos de Cloudflare/WAF.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-SV,es;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+}
+
+# Retardo mínimo y máximo (segundos) entre peticiones a cursos consecutivos.
+INTER_COURSE_DELAY_MIN = 2.0
+INTER_COURSE_DELAY_MAX = 5.0
+
 logger = logging.getLogger("s4vi.course_watcher")
 
 
@@ -262,6 +284,8 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     scan_blocked = True
                     break
                 if not html:
+                    # Pausa corta antes del siguiente curso para no saturar el servidor.
+                    await self._sleep_inter_course()
                     continue
 
                 target_week = await asyncio.to_thread(
@@ -334,6 +358,10 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     )
                     if created:
                         new_items.append(item)
+
+                # Pausa aleatoria entre cursos para reducir la tasa de peticiones
+                # y evitar que el WAF/Cloudflare identifique el tráfico como automatizado.
+                await self._sleep_inter_course()
 
         return {
             "new_items": new_items,
@@ -810,7 +838,13 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
                     retryable = status in {403, 408, 425, 429, 500, 502, 503, 504}
                     last_reason = f"status-{status}"
                     if retryable and attempt < max_attempts:
-                        await self._sleep_backoff(attempt)
+                        # Respetar el encabezado Retry-After si lo envía el servidor.
+                        retry_after = self._parse_retry_after(response.headers)
+                        if retry_after is not None:
+                            logger.info("Retry-After recibido: %.1fs (intento %s)", retry_after, attempt)
+                            await asyncio.sleep(retry_after)
+                        else:
+                            await self._sleep_backoff(attempt)
                         continue
 
                     return {
@@ -842,7 +876,25 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         delay_base = min(20.0, 2 ** max(0, attempt - 1))
         jitter = random.uniform(0, delay_base * 0.25)
         await asyncio.sleep(delay_base + jitter)
-    
+
+    def _parse_retry_after(self, headers) -> float | None:
+        """Devuelve los segundos a esperar según el encabezado Retry-After, o None si no está presente."""
+        raw = headers.get("Retry-After") if headers else None
+        if not raw:
+            return None
+        try:
+            seconds = float(raw)
+            # Limitar a un máximo razonable para no bloquear indefinidamente.
+            return min(seconds, 120.0)
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    async def _sleep_inter_course(self):
+        """Pausa aleatoria entre peticiones a cursos consecutivos para evitar bloqueos de tasa."""
+        delay = random.uniform(INTER_COURSE_DELAY_MIN, INTER_COURSE_DELAY_MAX)
+        await asyncio.sleep(delay)
+
     def _is_cloudflare_or_error_page(self, html: str) -> bool:
         """Detecta si la respuesta es una página de error/bloqueo de Cloudflare"""
         if not html:
@@ -855,6 +907,7 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         if any(phrase in html_lower for phrase in ["error 1015", "error 429", "error 403", "you are being rate limited"]):
             return True
         return False
+
 
     async def _verify_authenticated_session(self, session: aiohttp.ClientSession, use_manual_cookie: bool = False) -> bool:
         probe_urls = [f"{MOODLE_BASE_URL}/my/"]
@@ -880,13 +933,14 @@ class CourseWatcher(commands.GroupCog, group_name="tareas", group_description="E
         return False
 
     def _cookie_request_kwargs(self, use_manual_cookie: bool = True):
-        request_kwargs = {}
+        # Siempre incluir cabeceras de navegador para evitar bloqueos de Cloudflare/WAF.
+        headers = dict(BROWSER_HEADERS)
         cookie_header = os.getenv("CVIRTUAL_COOKIE", "").strip() if use_manual_cookie else ""
         if cookie_header and "=" not in cookie_header:
             cookie_header = f"MoodleSession={cookie_header}"
         if cookie_header:
-            request_kwargs["headers"] = {"Cookie": cookie_header}
-        return request_kwargs
+            headers["Cookie"] = cookie_header
+        return {"headers": headers}
 
     def _extract_login_token(self, html: str):
         soup = BeautifulSoup(html, "html.parser")
